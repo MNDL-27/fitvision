@@ -1,0 +1,18 @@
+[
+  {
+    "id": "pose-engine",
+    "prompt": "Create pose_detector.py, exercise_tracker.py, and test_pose_engine.py for a Computer Vision fitness project.\nIn pose_detector.py, implement PoseDetector using mediapipe.solutions.pose and opencv with find_pose(), find_landmarks(), and calculate_angle(p1, p2, p3) returning degrees 0-180 using numpy arctan2 or dot product.\nIn exercise_tracker.py, implement ExerciseTracker supporting 'curl' and 'squat' with rep counts, stage ('UP'/'DOWN'), angle, progress (0-100), and form feedback ('Good form', 'Keep elbows steady', 'Go lower').\nIn test_pose_engine.py, write unittest tests verifying calculate_angle geometry and ExerciseTracker state/rep updates. Ensure test_pose_engine.py exits 0 when run.",
+    "agent": "hermes",
+    "verify": [
+      ["/mnt/c/code/fitvision/.venv/bin/python3", "-m", "unittest", "test_pose_engine.py"]
+    ]
+  },
+  {
+    "id": "gesture-hud",
+    "prompt": "Create gesture_controller.py, hud_renderer.py, and test_gesture_hud.py for a Computer Vision fitness project.\nIn gesture_controller.py, implement GestureController using mediapipe.solutions.hands with find_hands() and get_gesture() to classify 'PAUSE' (open palm), 'SWITCH' (thumbs up), 'RESET' (fist), or 'NONE'.\nIn hud_renderer.py, implement HUDRenderer with draw_fps(img), draw_dashboard(img, exercise, reps, stage, feedback, angle, progress), and draw_badge(img, text, color) using cv2 drawing primitives (rectangles, text, progress bar).\nIn test_gesture_hud.py, write unittest tests verifying gesture classification logic and ensuring HUDRenderer draws cleanly on a dummy numpy blank image without error. Ensure test_gesture_hud.py exits 0 when run.",
+    "agent": "hermes",
+    "verify": [
+      ["/mnt/c/code/fitvision/.venv/bin/python3", "-m", "unittest", "test_gesture_hud.py"]
+    ]
+  }
+]

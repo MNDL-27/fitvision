@@ -1,0 +1,11 @@
+{
+  "preferred_agent": "hermes",
+  "max_parallel": 2,
+  "agent_timeout_seconds": 600,
+  "verification_timeout_seconds": 120,
+  "agents": {
+    "hermes": {
+      "command": ["hermes", "--in", ".", "-z", "{prompt}"]
+    }
+  }
+}
