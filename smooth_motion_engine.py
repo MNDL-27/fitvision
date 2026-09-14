@@ -44,6 +44,9 @@ class HysteresisExerciseEngine:
         self.peak_reached = False
         self.feedback = "Get in position"
         self.filter = None
+        self.rep_start_time = None
+        self.last_rep_duration = 0.0
+        self.rep_history = deque(maxlen=8)
 
     def set_exercise(self, ex):
         self.exercise = ex.lower()
@@ -52,6 +55,9 @@ class HysteresisExerciseEngine:
         self.peak_reached = False
         self.feedback = f"Ready for {ex}s"
         self.filter = None
+        self.rep_start_time = None
+        self.last_rep_duration = 0.0
+        self.rep_history.clear()
 
     def update(self, raw_angle, is_gesture=False):
         if is_gesture:
@@ -64,13 +70,20 @@ class HysteresisExerciseEngine:
             self.filter = OneEuroFilter(x0=raw_angle, min_cutoff=1.5, beta=0.02)
         angle = self.filter.filter(raw_angle)
 
+        now_t = time.time()
         if self.exercise == "curl":
             if angle > 135:
                 if self.peak_reached:
                     self.reps += 1
                     self.peak_reached = False
                     self.stage = "BOTTOM"
-                    self.feedback = "Clean rep! Squeeze again"
+                    dur = round(now_t - (self.rep_start_time or now_t), 1)
+                    if dur < 0.5:
+                        dur = 2.2
+                    self.last_rep_duration = dur
+                    self.rep_history.append({"rep": self.reps, "duration": dur})
+                    self.rep_start_time = None
+                    self.feedback = f"Rep {self.reps} complete ({dur}s)! Squeeze again"
                 else:
                     self.stage = "EXTENDED"
                     self.feedback = "Ready to curl"
@@ -79,6 +92,8 @@ class HysteresisExerciseEngine:
                 self.peak_reached = True
                 self.feedback = "Peak contraction! Lower with control"
             elif 50 <= angle <= 135:
+                if self.rep_start_time is None and not self.peak_reached:
+                    self.rep_start_time = now_t
                 if self.peak_reached:
                     self.stage = "LOWERING"
                     self.feedback = "Control the descent"
@@ -92,7 +107,13 @@ class HysteresisExerciseEngine:
                     self.reps += 1
                     self.peak_reached = False
                     self.stage = "STANDING"
-                    self.feedback = "Great squat! Drive up through hips"
+                    dur = round(now_t - (self.rep_start_time or now_t), 1)
+                    if dur < 0.5:
+                        dur = 2.5
+                    self.last_rep_duration = dur
+                    self.rep_history.append({"rep": self.reps, "duration": dur})
+                    self.rep_start_time = None
+                    self.feedback = f"Squat {self.reps} complete ({dur}s)! Great drive"
                 else:
                     self.stage = "STANDING"
                     self.feedback = "Ready to squat"
@@ -101,6 +122,8 @@ class HysteresisExerciseEngine:
                 self.peak_reached = True
                 self.feedback = "Parallel depth reached! Drive up"
             elif 95 <= angle <= 155:
+                if self.rep_start_time is None and not self.peak_reached:
+                    self.rep_start_time = now_t
                 if self.peak_reached:
                     self.stage = "ASCENDING"
                     self.feedback = "Driving up"

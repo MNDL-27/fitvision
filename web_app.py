@@ -214,6 +214,7 @@ INDEX_HTML = """
         let isCamera = false;
         let currentExercise = 'curl';
         let prevReps = 0;
+        let latestMovement = null;
 
         // Smooth Interpolation State (Decouples Rendering from Network Latency!)
         let currentLandmarks = {};
@@ -442,6 +443,7 @@ INDEX_HTML = """
                     document.getElementById('stat-phase').innerText = data.stage;
 
                     if (data.movement) {
+                        latestMovement = data.movement;
                         document.getElementById('movement-name').innerText = data.movement.movement;
                         document.getElementById('movement-cue').innerText = data.movement.posture_cue;
                         const handDesc = (data.hands && data.hands.length > 0) ? 'All 5 Fingers Articulated (' + data.hands.length + ' Hand' + (data.hands.length > 1 ? 's' : '') + ')' : data.movement.hand_state;
@@ -547,6 +549,14 @@ INDEX_HTML = """
                     const minThresh = isHeadConnection ? 0.65 : 0.55;
 
                     if (vis1 >= minThresh && vis2 >= minThresh) {
+                        const isSpine = (p1 === 11 && p2 === 23) || (p1 === 12 && p2 === 24);
+                        if (isSpine && latestMovement && latestMovement.torso_angle > 35) {
+                            octx.strokeStyle = '#ef4444'; // Red alert on bad spine posture!
+                            octx.lineWidth = 5.0;
+                        } else {
+                            octx.strokeStyle = '#06b6d4';
+                            octx.lineWidth = 3.5;
+                        }
                         octx.beginPath();
                         octx.moveTo(mapX(lms[p1][0]), lms[p1][1]);
                         octx.lineTo(mapX(lms[p2][0]), lms[p2][1]);
@@ -766,6 +776,8 @@ def process_frame():
         "active_side": tracker.active_side,
         "movement": raw_movement,
         "reps": reps,
+        "cadence": hysteresis_engine.last_rep_duration,
+        "rep_history": list(hysteresis_engine.rep_history),
         "exercise": tracker.exercise,
         "stage": stage,
         "feedback": feedback,
