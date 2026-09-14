@@ -89,14 +89,14 @@ class NvidiaNimCoach:
                 content = result["choices"][0]["message"]["content"].strip()
 
                 # Parse fields from structured response
-                score_match = re.search(r"SCORE:\s*(\d+)", content, re.IGNORECASE)
-                rating_match = re.search(r"RATING:\s*(\w+)", content, re.IGNORECASE)
-                cue_match = re.search(r"CUE:\s*([^\n]+)", content, re.IGNORECASE)
-                details_match = re.search(r"DETAILS:\s*(.+)", content, re.IGNORECASE | re.DOTALL)
+                score_match = re.search(r"(?:SCORE|Score)\s*\**:\s*\**\s*(\d+)", content)
+                rating_match = re.search(r"\b(EXCELLENT|GOOD|POOR|FAIR)\b", content, re.IGNORECASE)
+                cue_match = re.search(r"(?:CUE|Cue)\s*\**:\s*\**\s*(.+?)(?=\s*(?:\n|\*\*DETAILS|DETAILS:|$))", content, re.IGNORECASE)
+                details_match = re.search(r"(?:DETAILS|Details)\s*\**:\s*\**\s*(.+)", content, re.IGNORECASE | re.DOTALL)
 
                 score = int(score_match.group(1)) if score_match else 85
                 rating = rating_match.group(1).upper() if rating_match else "GOOD"
-                cue = cue_match.group(1).strip() if cue_match else "Keep core engaged and posture upright"
+                cue = cue_match.group(1).strip().strip('"').strip("'") if cue_match else "Keep core engaged and posture upright"
                 details = details_match.group(1).strip() if details_match else content
 
                 return {

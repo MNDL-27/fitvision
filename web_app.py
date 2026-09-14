@@ -1,4 +1,5 @@
 import base64
+import threading
 from pathlib import Path
 import cv2
 import mediapipe as mp
@@ -42,6 +43,7 @@ prev_gray = None
 current_trajectory = []
 latest_dtw = {"form_score": 100, "rating": "READY", "distance": 0.0}
 prev_server_reps = 0
+frame_counter = 0
 
 # Smooth Motion & Hysteresis Engines
 landmark_smoother = LandmarkSmoother(alpha=0.75)
@@ -50,12 +52,26 @@ movement_debouncer = MovementDebouncer(window_size=5)
 tracker = ExerciseTracker(exercise="curl")
 nim_coach = NvidiaNimCoach()
 
+nim_in_progress = False
 latest_nim = {
-    "score": 100,
+    "score": 85,
     "form": "GOOD",
-    "cue": "Stand in frame or select a demo video to begin.",
-    "details": "NVIDIA NIM Cloud Biomechanics ready.",
+    "cue": "Keep posture upright and spine neutral.",
+    "details": "NVIDIA NIM Cloud Biomechanics active (Llama 3.2 Vision).",
 }
+
+
+def async_nim_worker(img_b64, exercise):
+    global latest_nim, nim_in_progress
+    if nim_in_progress:
+        return
+    nim_in_progress = True
+    try:
+        res = nim_coach.analyze_frame(img_b64, exercise=exercise)
+        if res.get("success"):
+            latest_nim = res
+    finally:
+        nim_in_progress = False
 
 INDEX_HTML = """
 <!DOCTYPE html>
@@ -530,6 +546,13 @@ Generated automatically by FitVision AI
                         document.getElementById('ang-torso').innerText = (data.movement.torso_angle !== null ? data.movement.torso_angle + '°' : '--');
                     }
 
+                    // Update live NVIDIA NIM Coach card in real time
+                    if (data.nim) {
+                        document.getElementById('nim-score').innerText = 'Score: ' + data.nim.score + '/100 (' + data.nim.form + ')';
+                        document.getElementById('nim-cue').innerText = '"' + data.nim.cue + '"';
+                        document.getElementById('nim-details').innerText = data.nim.details || '';
+                    }
+
                     if (data.reps > prevReps) {
                         prevReps = data.reps;
                         speak('Rep ' + data.reps + ' complete');
@@ -789,7 +812,10 @@ Generated automatically by FitVision AI
             syncDimensions();
             video.play().catch(() => {});
             requestAnimationFrame(render60Fps);
-            setTimeout(networkLoop, 500);
+            setTimeout(networkLoop, 400);
+            setTimeout(() => {
+                triggerNimAudit();
+            }, 1600);
         });
     </script>
 </body>
@@ -920,6 +946,12 @@ def process_frame():
         progress = 0.0
         angle_out = None
 
+    # 5. Periodic Async NVIDIA NIM Biomechanics Audit (~every 70 frames / 2-3 sec)
+    global frame_counter
+    frame_counter += 1
+    if frame_counter % 70 == 0 and not nim_in_progress:
+        threading.Thread(target=async_nim_worker, args=(img_b64, tracker.exercise), daemon=True).start()
+
     return jsonify({
         "landmarks": landmarks_dict,
         "hands": all_hands,
@@ -935,6 +967,7 @@ def process_frame():
         "feedback": feedback,
         "angle": angle_out,
         "progress": round(progress, 1),
+        "nim": latest_nim,
     })
 
 
