@@ -1,16 +1,35 @@
 """NVIDIA NIM (Inference Microservice) integration for deep fitness form analysis."""
 import json
 import os
+import re
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 NIM_API_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
 DEFAULT_MODEL = "meta/llama-3.2-11b-vision-instruct"
 
 
+def load_env_key() -> str:
+    # Try environment variable first
+    key = os.environ.get("NVIDIA_API_KEY", "")
+    if key:
+        return key.strip()
+
+    # Try .env file in project directory
+    env_file = Path(__file__).parent / ".env"
+    if env_file.exists():
+        for line in env_file.read_text().splitlines():
+            if line.startswith("NVIDIA_API_KEY="):
+                val = line.split("=", 1)[1].strip().strip('"').strip("'")
+                if val:
+                    return val
+    return ""
+
+
 class NvidiaNimCoach:
     def __init__(self, api_key: str | None = None, model: str = DEFAULT_MODEL):
-        self.api_key = api_key or os.environ.get("NVIDIA_API_KEY", "")
+        self.api_key = (api_key or load_env_key()).strip()
         self.model = model
 
     def set_key(self, api_key: str):
@@ -24,24 +43,19 @@ class NvidiaNimCoach:
         if not self.is_configured():
             return {
                 "success": False,
-                "error": "NVIDIA API key not set. Get a free key at https://build.nvidia.com",
+                "error": "NVIDIA API key not set. Get a key at https://build.nvidia.com",
                 "form": "UNKNOWN",
-                "cue": "NVIDIA NIM Key needed"
+                "cue": "NVIDIA NIM key needed"
             }
 
         prompt = (
-            f"You are an elite biomechanics and fitness coach. Analyze this workout frame for exercise: {exercise.upper()}.\n"
-            "Assess:\n"
-            "1. Posture & joint alignment\n"
-            "2. Form defects (e.g., lower back arching, elbow drift/flaring, knees caving inward, incomplete depth/ROM)\n"
-            "3. Actionable coaching cue under 15 words\n\n"
-            "Return STRICT JSON only:\n"
-            "{\n"
-            '  "form_rating": "EXCELLENT" | "GOOD" | "POOR",\n'
-            '  "issues": ["list of defects or empty"],\n'
-            '  "cue": "Short punchy audio/visual cue for the athlete",\n'
-            '  "score": 0-100\n'
-            "}"
+            f"You are an elite fitness biomechanics coach analyzing a workout frame for {exercise.upper()}.\n"
+            "Analyze the person's posture and form.\n"
+            "Return concise assessment in this format:\n"
+            "SCORE: <integer 0-100>\n"
+            "RATING: <EXCELLENT, GOOD, or POOR>\n"
+            "CUE: <under 15 words direct coaching correction>\n"
+            "DETAILS: <1-2 sentences on posture, back straightness, joint alignment>"
         )
 
         payload = {
@@ -56,7 +70,7 @@ class NvidiaNimCoach:
                 }
             ],
             "temperature": 0.2,
-            "max_tokens": 300
+            "max_tokens": 250
         }
 
         req = urllib.request.Request(
@@ -70,39 +84,36 @@ class NvidiaNimCoach:
         )
 
         try:
-            with urllib.request.urlopen(req, timeout=12) as response:
+            with urllib.request.urlopen(req, timeout=30) as response:
                 result = json.loads(response.read().decode("utf-8"))
                 content = result["choices"][0]["message"]["content"].strip()
 
-                # Extract JSON if enclosed in markdown ```json ... ```
-                if "```json" in content:
-                    content = content.split("```json")[1].split("```")[0].strip()
-                elif "```" in content:
-                    content = content.split("```")[1].split("```")[0].strip()
+                # Parse fields from structured response
+                score_match = re.search(r"SCORE:\s*(\d+)", content, re.IGNORECASE)
+                rating_match = re.search(r"RATING:\s*(\w+)", content, re.IGNORECASE)
+                cue_match = re.search(r"CUE:\s*([^\n]+)", content, re.IGNORECASE)
+                details_match = re.search(r"DETAILS:\s*(.+)", content, re.IGNORECASE | re.DOTALL)
 
-                try:
-                    parsed = json.loads(content)
-                    return {
-                        "success": True,
-                        "form": parsed.get("form_rating", "GOOD"),
-                        "issues": parsed.get("issues", []),
-                        "cue": parsed.get("cue", "Maintain steady cadence"),
-                        "score": parsed.get("score", 90),
-                        "model": self.model
-                    }
-                except json.JSONDecodeError:
-                    return {
-                        "success": True,
-                        "form": "GOOD",
-                        "cue": content[:120],
-                        "model": self.model
-                    }
+                score = int(score_match.group(1)) if score_match else 85
+                rating = rating_match.group(1).upper() if rating_match else "GOOD"
+                cue = cue_match.group(1).strip() if cue_match else "Keep core engaged and posture upright"
+                details = details_match.group(1).strip() if details_match else content
+
+                return {
+                    "success": True,
+                    "form": rating,
+                    "score": score,
+                    "cue": cue,
+                    "details": details[:300],
+                    "raw": content,
+                    "model": self.model
+                }
 
         except urllib.error.HTTPError as e:
             err_body = e.read().decode("utf-8", errors="ignore")
             return {
                 "success": False,
-                "error": f"NVIDIA NIM API error {e.code}: {err_body[:200]}",
+                "error": f"NVIDIA NIM error {e.code}: {err_body[:200]}",
                 "form": "ERROR",
                 "cue": "NIM request failed"
             }

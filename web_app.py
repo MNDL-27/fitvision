@@ -1,5 +1,5 @@
 import base64
-import os
+import threading
 import time
 import cv2
 import numpy as np
@@ -19,12 +19,36 @@ pose_detector = PoseDetector(complexity=0, detection_con=0.35, track_con=0.35)
 gesture_ctrl = GestureController(min_detection_confidence=0.7)
 tracker = ExerciseTracker(exercise="curl")
 hud = HUDRenderer()
-nim_coach = NvidiaNimCoach(api_key=os.environ.get("NVIDIA_API_KEY", ""))
+nim_coach = NvidiaNimCoach()
 
 paused = False
 gestures_enabled = False
 last_gesture_time = 0
 frame_counter = 0
+
+# NVIDIA NIM background audit storage
+latest_nim_result = {
+    "success": True,
+    "form": "READY",
+    "score": 100,
+    "cue": "Stand in frame & perform reps. NVIDIA NIM will audit your biomechanics.",
+    "details": "Ready for real-time inference via NVIDIA Cloud Vision."
+}
+nim_in_progress = False
+
+
+def async_nim_audit(frame_b64: str, exercise: str):
+    global latest_nim_result, nim_in_progress
+    if nim_in_progress:
+        return
+    nim_in_progress = True
+    try:
+        res = nim_coach.analyze_frame(frame_b64, exercise=exercise)
+        if res.get("success"):
+            latest_nim_result = res
+    finally:
+        nim_in_progress = False
+
 
 INDEX_HTML = """
 <!DOCTYPE html>
@@ -32,50 +56,53 @@ INDEX_HTML = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>FitVision — AI Fitness Trainer</title>
+    <title>FitVision — AI Fitness Trainer (NVIDIA NIM)</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
-        body { background: #090d16; color: #f8fafc; min-height: 100vh; display: flex; flex-direction: column; align-items: center; padding: 12px; }
+        body { background: #070b14; color: #f8fafc; min-height: 100vh; display: flex; flex-direction: column; align-items: center; padding: 12px; }
         header { text-align: center; margin-bottom: 8px; width: 100%; max-width: 640px; }
-        h1 { font-size: 1.4rem; font-weight: 800; color: #38bdf8; display: flex; align-items: center; justify-content: center; gap: 8px; }
-        .badge { background: #0284c7; font-size: 0.7rem; padding: 2px 8px; border-radius: 9999px; text-transform: uppercase; color: #fff; }
-        .badge.nim { background: #16a34a; font-weight: 800; }
-        .viewport { position: relative; width: 100%; max-width: 640px; aspect-ratio: 4/3; background: #000; border-radius: 16px; overflow: hidden; box-shadow: 0 10px 30px -5px rgba(0,0,0,0.7); border: 2px solid #1e293b; }
+        h1 { font-size: 1.35rem; font-weight: 800; color: #38bdf8; display: flex; align-items: center; justify-content: center; gap: 8px; }
+        .badge { font-size: 0.65rem; padding: 3px 8px; border-radius: 9999px; text-transform: uppercase; color: #fff; font-weight: 800; }
+        .badge.nim { background: #16a34a; box-shadow: 0 0 10px rgba(22,163,74,0.5); }
+        .viewport { position: relative; width: 100%; max-width: 640px; aspect-ratio: 4/3; background: #000; border-radius: 16px; overflow: hidden; box-shadow: 0 12px 35px -5px rgba(0,0,0,0.8); border: 2px solid #1e293b; }
         #webcam { width: 100%; height: 100%; object-fit: cover; display: block; transform: scaleX(-1); }
         #overlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
-        .overlay-loader { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; background: rgba(9, 13, 22, 0.95); z-index: 10; gap: 12px; }
+        .overlay-loader { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; background: rgba(7, 11, 20, 0.95); z-index: 10; gap: 12px; }
         .btn-start { background: #22c55e; color: #000; border: none; padding: 14px 32px; border-radius: 14px; font-size: 1.15rem; font-weight: 800; cursor: pointer; transition: 0.2s; box-shadow: 0 4px 15px rgba(34,197,94,0.5); }
         .btn-start:active { transform: scale(0.96); }
+        
+        .feedback-banner { width: 100%; max-width: 640px; background: #1e1b4b; border: 1px solid #4338ca; border-radius: 12px; padding: 10px 14px; margin-top: 10px; font-size: 0.9rem; font-weight: 700; color: #a5b4fc; text-align: center; }
+        
+        /* NVIDIA NIM Coach Card */
+        .nim-card { width: 100%; max-width: 640px; background: #0f172a; border: 1px solid #22c55e; border-radius: 12px; padding: 12px; margin-top: 10px; box-shadow: 0 4px 20px rgba(34,197,94,0.15); }
+        .nim-header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #1e293b; padding-bottom: 6px; margin-bottom: 8px; }
+        .nim-title { font-size: 0.85rem; font-weight: 800; color: #4ade80; display: flex; align-items: center; gap: 6px; }
+        .nim-score { font-size: 0.85rem; font-weight: 800; color: #facc15; }
+        .nim-cue { font-size: 0.95rem; font-weight: 700; color: #f8fafc; margin-bottom: 4px; }
+        .nim-details { font-size: 0.78rem; color: #94a3b8; line-height: 1.4; }
+
         .stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; width: 100%; max-width: 640px; margin-top: 10px; }
         .stat-card { background: #111827; padding: 8px 6px; border-radius: 12px; border: 1px solid #1f2937; text-align: center; }
         .stat-label { font-size: 0.65rem; text-transform: uppercase; color: #9ca3af; font-weight: 700; letter-spacing: 0.5px; }
         .stat-value { font-size: 1.3rem; font-weight: 800; margin-top: 2px; color: #f9fafb; }
         .stat-value.green { color: #4ade80; }
         .stat-value.yellow { color: #facc15; }
-        .feedback-banner { width: 100%; max-width: 640px; background: #1e1b4b; border: 1px solid #4338ca; border-radius: 12px; padding: 10px 14px; margin-top: 10px; font-size: 0.95rem; font-weight: 700; color: #a5b4fc; text-align: center; display: flex; align-items: center; justify-content: center; gap: 8px; }
+
         .controls { display: flex; flex-wrap: wrap; gap: 8px; width: 100%; max-width: 640px; margin-top: 10px; }
         .btn { flex: 1; min-width: 120px; padding: 12px 8px; border-radius: 10px; border: none; font-weight: 700; font-size: 0.85rem; cursor: pointer; transition: 0.15s; }
         .btn-blue { background: #2563eb; color: #fff; }
         .btn-dark { background: #1f2937; color: #f3f4f6; border: 1px solid #374151; }
         .btn-red { background: #dc2626; color: #fff; }
-        .btn-green { background: #15803d; color: #fff; }
+        .btn-nim { background: #15803d; color: #fff; font-weight: 800; }
         .btn:active { transform: scale(0.97); }
 
-        /* NVIDIA NIM Panel */
-        .nim-panel { width: 100%; max-width: 640px; background: #0f172a; border: 1px solid #334155; border-radius: 12px; padding: 12px; margin-top: 10px; }
-        .nim-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
-        .nim-title { font-size: 0.85rem; font-weight: 800; color: #22c55e; display: flex; align-items: center; gap: 6px; }
-        .nim-row { display: flex; gap: 6px; margin-top: 6px; }
-        .nim-input { flex: 1; background: #1e293b; border: 1px solid #475569; border-radius: 8px; padding: 6px 10px; color: #fff; font-size: 0.8rem; }
-        .nim-btn { background: #22c55e; color: #000; border: none; border-radius: 8px; padding: 6px 14px; font-weight: 700; font-size: 0.8rem; cursor: pointer; }
-        .nim-result { margin-top: 8px; background: #1e293b; padding: 8px 10px; border-radius: 8px; font-size: 0.8rem; color: #cbd5e1; display: none; }
         .gesture-guide { width: 100%; max-width: 640px; background: rgba(17, 24, 39, 0.7); border-radius: 12px; padding: 8px 12px; margin-top: 8px; font-size: 0.75rem; color: #9ca3af; border: 1px dashed #374151; text-align: center; }
         .gesture-guide b { color: #e5e7eb; }
     </style>
 </head>
 <body>
     <header>
-        <h1>FitVision AI <span class="badge">BlazePose</span> <span class="badge nim">NVIDIA NIM</span></h1>
+        <h1>FitVision AI <span class="badge nim">⚡ NVIDIA NIM Connected</span></h1>
     </header>
 
     <div class="viewport">
@@ -87,8 +114,19 @@ INDEX_HTML = """
         </div>
     </div>
 
+    <!-- Real-time Heuristic Feedback -->
     <div class="feedback-banner" id="banner">
         💬 <span id="stat-feedback">Stand in front of camera to begin</span>
+    </div>
+
+    <!-- Deep NVIDIA NIM AI Biomechanics Card -->
+    <div class="nim-card">
+        <div class="nim-header">
+            <div class="nim-title">🧠 NVIDIA NIM Biomechanical Coach (Llama 3.2 Vision)</div>
+            <div class="nim-score" id="nim-score">Form Score: 100/100</div>
+        </div>
+        <div class="nim-cue" id="nim-cue">"Stand in frame & perform reps. NVIDIA NIM will audit your biomechanics."</div>
+        <div class="nim-details" id="nim-details">Ready for cloud AI inference via NVIDIA NIM API.</div>
     </div>
 
     <div class="stats-grid">
@@ -105,7 +143,7 @@ INDEX_HTML = """
             <div class="stat-value yellow" id="stat-stage">READY</div>
         </div>
         <div class="stat-card">
-            <div class="stat-label">Angle</div>
+            <div class="stat-label">Joint Angle</div>
             <div class="stat-value" id="stat-angle">0°</div>
         </div>
     </div>
@@ -115,24 +153,11 @@ INDEX_HTML = """
         <button class="btn btn-dark" onclick="togglePause()" id="btn-pause">⏸ Pause</button>
         <button class="btn btn-red" onclick="resetReps()">↺ Reset</button>
         <button class="btn btn-dark" onclick="flipCamera()">📷 Flip Camera</button>
-        <button class="btn btn-green" onclick="runNimAudit()">🧠 NVIDIA NIM Audit</button>
-    </div>
-
-    <!-- NVIDIA NIM Settings Card -->
-    <div class="nim-panel">
-        <div class="nim-header">
-            <div class="nim-title">⚡ NVIDIA NIM Biomechanics Engine</div>
-            <span style="font-size: 0.75rem; color: #94a3b8;" id="nim-status">Status: Standby</span>
-        </div>
-        <div class="nim-row">
-            <input type="password" id="nim-key" class="nim-input" placeholder="Enter NVIDIA API key (nvapi-...) for deep LLM vision coaching" />
-            <button class="nim-btn" onclick="saveNimKey()">Save Key</button>
-        </div>
-        <div class="nim-result" id="nim-result"></div>
+        <button class="btn btn-nim" onclick="triggerNimAudit()" id="btn-nim">⚡ NVIDIA NIM Audit</button>
     </div>
 
     <div class="gesture-guide">
-        👋 <b>Controls:</b> Stand 1.5 - 2 meters back so upper body/legs are in view. Click <b>NVIDIA NIM Audit</b> anytime for full AI form critique.
+        💡 <b>How it works:</b> Local CV tracks joint angles in real time (30 FPS). Click <b>⚡ NVIDIA NIM Audit</b> for deep biomechanical posture critique powered by NVIDIA Cloud.
     </div>
 
     <script>
@@ -152,6 +177,7 @@ INDEX_HTML = """
         let lastFpsTime = performance.now();
         let frameCount = 0;
         let fps = 0;
+        let prevReps = 0;
 
         const POSE_CONNECTIONS = [
             [11, 13], [13, 15], // Left arm
@@ -224,6 +250,19 @@ INDEX_HTML = """
                     document.getElementById('stat-stage').innerText = data.stage;
                     document.getElementById('stat-angle').innerText = data.angle + '°';
                     document.getElementById('stat-feedback').innerText = data.feedback;
+
+                    // Update NVIDIA NIM Coach Card if new critique returned
+                    if (data.nim) {
+                        document.getElementById('nim-score').innerText = 'Form Score: ' + data.nim.score + '/100 (' + data.nim.form + ')';
+                        document.getElementById('nim-cue').innerText = '"' + data.nim.cue + '"';
+                        document.getElementById('nim-details').innerText = data.nim.details || '';
+                    }
+
+                    // Auto-audit with NVIDIA NIM every rep completion!
+                    if (data.reps > prevReps) {
+                        prevReps = data.reps;
+                        triggerNimAudit();
+                    }
                 })
                 .catch(e => console.warn('Inference error:', e))
                 .finally(() => { inFlight = false; });
@@ -324,28 +363,17 @@ INDEX_HTML = """
         async function resetReps() {
             await fetch('/reset', { method: 'POST' });
             document.getElementById('stat-reps').innerText = '0';
+            prevReps = 0;
         }
 
-        async function saveNimKey() {
-            const key = document.getElementById('nim-key').value;
-            if (!key) return alert('Enter key first');
-            const res = await fetch('/set_nim_key', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ key: key })
-            });
-            const data = await res.json();
-            document.getElementById('nim-status').innerText = 'Status: ' + (data.configured ? 'Configured ✅' : 'Invalid ❌');
-        }
-
-        async function runNimAudit() {
+        async function triggerNimAudit() {
             if (!active) return alert('Start camera first!');
-            const nimResult = document.getElementById('nim-result');
-            nimResult.style.display = 'block';
-            nimResult.innerHTML = '⏳ <i>Sending frame to NVIDIA NIM (Llama 3.2 Vision)...</i>';
+            const btn = document.getElementById('btn-nim');
+            btn.innerText = '⏳ Auditing...';
+            btn.disabled = true;
 
             sctx.drawImage(video, 0, 0, sendCanvas.width, sendCanvas.height);
-            const base64Data = sendCanvas.toDataURL('image/jpeg', 0.8).split(',')[1];
+            const base64Data = sendCanvas.toDataURL('image/jpeg', 0.75).split(',')[1];
 
             try {
                 const res = await fetch('/nim_analyze', {
@@ -355,16 +383,17 @@ INDEX_HTML = """
                 });
                 const data = await res.json();
                 if (data.success) {
-                    nimResult.innerHTML = `
-                        <b>Rating:</b> <span style="color:#4ade80">${data.form}</span> (Score: ${data.score}/100)<br>
-                        <b>Coach Cue:</b> <i>"${data.cue}"</i><br>
-                        ${data.issues && data.issues.length ? '<b>Issues:</b> ' + data.issues.join(', ') : '<b>Issues:</b> None detected'}
-                    `;
+                    document.getElementById('nim-score').innerText = 'Form Score: ' + data.score + '/100 (' + data.form + ')';
+                    document.getElementById('nim-cue').innerText = '"' + data.cue + '"';
+                    document.getElementById('nim-details').innerText = data.details || '';
                 } else {
-                    nimResult.innerHTML = `<span style="color:#f87171">NIM: ${data.error || 'Check API Key'}</span>`;
+                    document.getElementById('nim-cue').innerText = 'NIM Notice: ' + (data.error || 'Check key');
                 }
             } catch (e) {
-                nimResult.innerHTML = `<span style="color:#f87171">Request error: ${e.message}</span>`;
+                console.warn('NIM Audit error:', e);
+            } finally {
+                btn.innerText = '⚡ NVIDIA NIM Audit';
+                btn.disabled = false;
             }
         }
     </script>
@@ -452,6 +481,7 @@ def process_fast():
         "progress": status["progress"],
         "gesture": gesture,
         "paused": paused,
+        "nim": latest_nim_result
     })
 
 
@@ -464,14 +494,6 @@ def nim_analyze():
 
     result = nim_coach.analyze_frame(img_b64, exercise=tracker.exercise)
     return jsonify(result)
-
-
-@app.route("/set_nim_key", methods=["POST"])
-def set_nim_key():
-    data = request.get_json(force=True)
-    key = data.get("key", "").strip()
-    nim_coach.set_key(key)
-    return jsonify({"configured": nim_coach.is_configured()})
 
 
 @app.route("/switch_exercise", methods=["POST"])
