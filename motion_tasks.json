@@ -1,0 +1,18 @@
+[
+  {
+    "id": "optical-flow-engine",
+    "prompt": "Create motion_energy.py and test_motion_energy.py in this repository to implement dense Optical Flow motion detection for fitness exercises.\nIn motion_energy.py, implement MotionEnergyDetector using cv2.calcOpticalFlowFarneback. Add compute_motion_energy(prev_gray, curr_gray, bbox=None) that calculates average motion magnitude and directional velocity (upward vs downward flow). Also add is_motion_active(magnitude, threshold=1.5).\nIn test_motion_energy.py, write unittest tests verifying optical flow on moving synthetic patterns (e.g. translating bright squares) vs static frames. Ensure test_motion_energy.py passes completely with python3 -m unittest.",
+    "agent": "hermes",
+    "verify": [
+      ["/mnt/c/code/fitvision/.venv/bin/python3", "-m", "unittest", "test_motion_energy.py"]
+    ]
+  },
+  {
+    "id": "dtw-kinematics-engine",
+    "prompt": "Create dtw_evaluator.py and test_dtw_evaluator.py in this repository to evaluate exercise repetitions using Dynamic Time Warping (DTW).\nIn dtw_evaluator.py, implement compute_dtw_distance(seq_a, seq_b) and DTWRepEvaluator with canonical reference curves for 'curl' and 'squat' (normalized 0 to 100). Implement score_rep(trajectory, exercise) returning form_score (0-100) and consistency rating ('EXCELLENT', 'GOOD', 'POOR').\nIn test_dtw_evaluator.py, write unittest tests verifying that identical trajectories return score 100, slightly warped trajectories return high scores, and completely divergent trajectories return low scores. Ensure test_dtw_evaluator.py passes completely with python3 -m unittest.",
+    "agent": "hermes",
+    "verify": [
+      ["/mnt/c/code/fitvision/.venv/bin/python3", "-m", "unittest", "test_dtw_evaluator.py"]
+    ]
+  }
+]
