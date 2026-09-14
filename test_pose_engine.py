@@ -28,26 +28,42 @@ class TestPoseEngine(unittest.TestCase):
         tracker = ExerciseTracker(exercise='curl')
         self.assertEqual(tracker.reps, 0)
 
-        lms_down = {11: (100, 100), 13: (100, 200), 15: (100, 300)}
-        tracker.update(lms_down)
+        # 1. Down position (arm extended)
+        lms_down = {11: (100, 100, 0.9), 13: (100, 200, 0.9), 15: (100, 300, 0.9)}
+        for _ in range(3):
+            tracker.update(lms_down)
         self.assertEqual(tracker.stage, 'DOWN')
 
-        lms_up = {11: (100, 100), 13: (100, 200), 15: (110, 120)}
-        tracker.update(lms_up)
+        # 2. Up position (curled)
+        lms_up = {11: (100, 100, 0.9), 13: (100, 200, 0.9), 15: (100, 110, 0.9)}
+        for _ in range(3):
+            tracker.update(lms_up)
         self.assertEqual(tracker.stage, 'UP')
+
+        # 3. Complete rep by returning down
+        for _ in range(3):
+            tracker.update(lms_down)
         self.assertEqual(tracker.reps, 1)
 
     def test_squat_counter(self):
         tracker = ExerciseTracker(exercise='squat')
         self.assertEqual(tracker.reps, 0)
 
-        lms_stand = {23: (100, 100), 25: (100, 200), 27: (100, 300)}
-        tracker.update(lms_stand)
+        # Standing upright
+        lms_stand = {23: (100, 100, 0.9), 25: (100, 200, 0.9), 27: (100, 300, 0.9)}
+        for _ in range(3):
+            tracker.update(lms_stand)
         self.assertEqual(tracker.stage, 'UP')
 
-        lms_squat = {23: (100, 200), 25: (100, 300), 27: (200, 300)}
-        tracker.update(lms_squat)
+        # Deep squat (~90 deg)
+        lms_squat = {23: (100, 200, 0.9), 25: (100, 300, 0.9), 27: (200, 300, 0.9)}
+        for _ in range(3):
+            tracker.update(lms_squat)
         self.assertEqual(tracker.stage, 'DOWN')
+
+        # Stand back up
+        for _ in range(3):
+            tracker.update(lms_stand)
         self.assertEqual(tracker.reps, 1)
 
 if __name__ == '__main__':

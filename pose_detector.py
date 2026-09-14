@@ -2,8 +2,9 @@ import cv2
 import mediapipe as mp
 import numpy as np
 
+
 class PoseDetector:
-    def __init__(self, mode=False, complexity=1, smooth_landmarks=True,
+    def __init__(self, mode=False, complexity=0, smooth_landmarks=True,
                  enable_segmentation=False, smooth_segmentation=True,
                  detection_con=0.5, track_con=0.5):
         self.mode = mode
@@ -31,19 +32,21 @@ class PoseDetector:
         self.results = self.pose.process(img_rgb)
         if self.results.pose_landmarks and draw:
             self.mp_draw.draw_landmarks(
-                img, self.results.pose_landmarks, self.mp_pose.POSE_CONNECTIONS
+                img, self.results.pose_landmarks, self.mp_pose.POSE_CONNECTIONS,
+                self.mp_draw.DrawingSpec(color=(245, 117, 66), thickness=2, circle_radius=2),
+                self.mp_draw.DrawingSpec(color=(245, 66, 230), thickness=2, circle_radius=2)
             )
         return img
 
     def find_landmarks(self, img, draw=True):
         lm_list = []
-        if hasattr(self, 'results') and self.results.pose_landmarks:
+        if hasattr(self, "results") and self.results.pose_landmarks:
             h, w, _ = img.shape
             for idx, lm in enumerate(self.results.pose_landmarks.landmark):
                 cx, cy = int(lm.x * w), int(lm.y * h)
                 lm_list.append([idx, cx, cy, lm.z, lm.visibility])
-                if draw:
-                    cv2.circle(img, (cx, cy), 5, (255, 0, 0), cv2.FILLED)
+                if draw and lm.visibility > 0.4:
+                    cv2.circle(img, (cx, cy), 4, (0, 255, 0), cv2.FILLED)
         return lm_list
 
     @staticmethod
@@ -59,3 +62,13 @@ class PoseDetector:
         cos_angle = np.clip(cos_angle, -1.0, 1.0)
         angle = np.degrees(np.arccos(cos_angle))
         return float(angle)
+
+    def draw_angle(self, img, p1, p2, p3, angle):
+        """Draw visual angle text and connection lines on the active joint."""
+        x2, y2 = int(p2[0]), int(p2[1])
+        cv2.circle(img, (x2, y2), 8, (0, 0, 255), cv2.FILLED)
+        cv2.circle(img, (x2, y2), 12, (255, 255, 255), 2)
+        cv2.putText(
+            img, f"{int(angle)} deg", (x2 - 40, y2 - 20),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA
+        )
