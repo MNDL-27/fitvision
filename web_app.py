@@ -11,6 +11,8 @@ from movement_analyzer import analyze_full_body_movement
 from nvidia_nim import NvidiaNimCoach
 from pose_detector import PoseDetector
 from smooth_motion_engine import HysteresisExerciseEngine, LandmarkSmoother, MovementDebouncer
+from motion_energy import MotionEnergyDetector
+from dtw_evaluator import DTWRepEvaluator
 
 STATIC_DIR = Path(__file__).parent / "static"
 app = Flask(__name__, static_folder=str(STATIC_DIR))
@@ -32,6 +34,14 @@ crop_hands_detector = mp_hands.Hands(
     max_num_hands=1,
     min_detection_confidence=0.25,
 )
+
+# Motion Detection & Kinematic Engines
+motion_detector = MotionEnergyDetector()
+dtw_evaluator = DTWRepEvaluator()
+prev_gray = None
+current_trajectory = []
+latest_dtw = {"form_score": 100, "rating": "READY", "distance": 0.0}
+prev_server_reps = 0
 
 # Smooth Motion & Hysteresis Engines
 landmark_smoother = LandmarkSmoother(alpha=0.75)
@@ -815,6 +825,22 @@ def process_frame():
 
     h, w = frame.shape[:2]
 
+    # 0. Dense Optical Flow Motion Energy (Exp 2)
+    global prev_gray, current_trajectory, latest_dtw, prev_server_reps
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    flow_info = {"magnitude": 0.0, "active": True}
+    if prev_gray is not None and prev_gray.shape == gray.shape:
+        try:
+            flow_res = motion_detector.compute_motion_energy(prev_gray, gray)
+            flow_info = {
+                "magnitude": round(flow_res["magnitude"], 2),
+                "directional_velocity": round(flow_res["directional_velocity"] or 0.0, 2),
+                "active": motion_detector.is_motion_active(flow_res["magnitude"], threshold=0.8),
+            }
+        except Exception:
+            pass
+    prev_gray = gray
+
     # 1. Full 33-point Pose Landmark Extraction (Exp 6)
     raw_landmarks = {}
     active_joint = None
@@ -864,10 +890,24 @@ def process_frame():
     stable_movement_name = movement_debouncer.update(raw_movement.get("movement", "Ready"))
     raw_movement["movement"] = stable_movement_name
 
-    # 4. Hysteresis Exercise Rep Counting
+    # 4. Hysteresis Exercise Rep Counting & DTW Trajectory Matching
     active_angle = raw_movement.get("active_angle")
     is_gesture = raw_movement.get("is_gesture", False)
     stage, reps, feedback = hysteresis_engine.update(active_angle, is_gesture)
+
+    # Collect trajectory for DTW curve comparison
+    if active_angle is not None:
+        current_trajectory.append(active_angle)
+
+    # Evaluate with DTW when rep count increments
+    if reps > prev_server_reps:
+        prev_server_reps = reps
+        if len(current_trajectory) >= 4:
+            try:
+                latest_dtw = dtw_evaluator.score_rep(current_trajectory, tracker.exercise)
+            except Exception:
+                pass
+        current_trajectory = []
 
     # Calculate smooth progress percentage ONLY if angle exists
     if active_angle is not None:
@@ -885,6 +925,8 @@ def process_frame():
         "hands": all_hands,
         "active_side": tracker.active_side,
         "movement": raw_movement,
+        "motion_energy": flow_info,
+        "dtw": latest_dtw,
         "reps": reps,
         "cadence": hysteresis_engine.last_rep_duration,
         "rep_history": list(hysteresis_engine.rep_history),
