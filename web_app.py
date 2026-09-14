@@ -1,43 +1,19 @@
 import base64
-import json
-import os
-import re
-import time
-import urllib.error
-import urllib.request
-from pathlib import Path
 from flask import Flask, jsonify, render_template_string, request
 from flask_cors import CORS
+
+from nim_gesture_engine import NimGestureEngine
+from nim_pose_engine import NimPoseEngine
 
 app = Flask(__name__)
 CORS(app)
 
-NIM_API_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
-MODEL = "meta/llama-3.2-11b-vision-instruct"
+pose_engine = NimPoseEngine(exercise="curl")
+gesture_engine = NimGestureEngine()
 
-
-def get_api_key() -> str:
-    key = os.environ.get("NVIDIA_API_KEY", "")
-    if key:
-        return key.strip()
-    env_path = Path(__file__).parent / ".env"
-    if env_path.exists():
-        for line in env_path.read_text().splitlines():
-            if line.startswith("NVIDIA_API_KEY="):
-                return line.split("=", 1)[1].strip().strip('"').strip("'")
-    return ""
-
-
-API_KEY = get_api_key()
-
-# Server state
-current_exercise = "curl"
-reps = 0
-last_phase = "READY"
-last_cue = "Stand in frame to begin"
-last_score = 100
-last_form = "READY"
-last_flaws = []
+paused = False
+gestures_enabled = True
+frame_counter = 0
 
 INDEX_HTML = """
 <!DOCTYPE html>
@@ -103,7 +79,7 @@ INDEX_HTML = """
         </div>
         <div class="overlay-loader" id="loader">
             <button class="btn-start" onclick="startCamera()">📷 Launch Camera</button>
-            <p style="color: #9ca3af; font-size: 0.85rem;">All frames evaluated directly by NVIDIA Llama 3.2 Vision</p>
+            <p style="color: #9ca3af; font-size: 0.85rem;">All tasks computed via NVIDIA NIM Cloud Vision API</p>
         </div>
     </div>
 
@@ -127,7 +103,7 @@ INDEX_HTML = """
             <div class="stat-value" id="stat-exercise">CURL</div>
         </div>
         <div class="stat-card">
-            <div class="stat-label">AI Phase</div>
+            <div class="stat-label">Movement Phase</div>
             <div class="stat-value yellow" id="stat-phase">READY</div>
         </div>
         <div class="stat-card">
@@ -143,7 +119,7 @@ INDEX_HTML = """
     </div>
 
     <div class="footer-note">
-        Powered by NVIDIA NIM Cloud Microservice (<code>meta/llama-3.2-11b-vision-instruct</code>). Pure neural vision without local heuristics.
+        100% Powered by NVIDIA NIM Cloud (<code>meta/llama-3.2-11b-vision-instruct</code>). Both Pose Biomechanics & Touchless Gestures processed via API.
     </div>
 
     <script>
@@ -190,7 +166,7 @@ INDEX_HTML = """
             if (!inFlight && video.readyState >= 2) {
                 inFlight = true;
                 document.getElementById('status-pulse').style.background = '#38bdf8';
-                document.getElementById('nim-status-text').innerText = 'NVIDIA NIM: Analyzing frame...';
+                document.getElementById('nim-status-text').innerText = 'NVIDIA NIM: Evaluating frame...';
 
                 // Grab frame
                 sctx.drawImage(video, 0, 0, sendCanvas.width, sendCanvas.height);
@@ -217,8 +193,8 @@ INDEX_HTML = """
                 }
             }
 
-            // Continuous loop
-            setTimeout(nimLoop, 200);
+            // Loop continuously
+            setTimeout(nimLoop, 150);
         }
 
         function updateDashboard(data) {
@@ -245,6 +221,10 @@ INDEX_HTML = """
                     }
                 });
             }
+
+            if (data.gesture && data.gesture !== 'NONE') {
+                document.getElementById('nim-status-text').innerText = 'Gesture Detected: ' + data.gesture;
+            }
         }
 
         async function switchExercise() {
@@ -270,132 +250,50 @@ def index():
 
 @app.route("/process_nim", methods=["POST"])
 def process_nim():
-    global reps, last_phase, last_cue, last_score, last_form, last_flaws
+    global frame_counter
 
     data = request.get_json(force=True)
     img_b64 = data.get("image", "")
     if not img_b64:
         return jsonify({"error": "No image"}), 400
 
-    prompt = (
-        f"You are the primary Computer Vision engine evaluating fitness exercise: {current_exercise.upper()}.\n"
-        "Analyze this user's frame.\n"
-        "Assess:\n"
-        "1. Phase: 'UP', 'DOWN', or 'IN_BETWEEN'\n"
-        "2. Form: 'EXCELLENT', 'GOOD', or 'POOR'\n"
-        "3. Score: integer 0-100\n"
-        "4. Cue: under 12 words direct coaching tip\n"
-        "5. Flaws: list any defects (e.g. elbow flare, arched back, knees caving) or None"
-    )
+    frame_counter += 1
 
-    payload = {
-        "model": MODEL,
-        "messages": [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}}
-                ]
-            }
-        ],
-        "temperature": 0.1,
-        "max_tokens": 150
-    }
+    # 1. Pose, movement phase, form & rep analysis (100% via NVIDIA NIM)
+    pose_result = pose_engine.analyze_frame(img_b64)
 
-    req = urllib.request.Request(
-        NIM_API_URL,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {API_KEY}",
-            "User-Agent": "FitVision-NVIDIA-NIM-Pure/1.0"
-        }
-    )
-
-    try:
-        with urllib.request.urlopen(req, timeout=12) as resp:
-            body = json.loads(resp.read().decode("utf-8"))
-            content = body["choices"][0]["message"]["content"].strip()
-
-            phase = "IN_BETWEEN"
-            form = "GOOD"
-            score = 85
-            cue = "Keep posture aligned and steady"
-            flaws = []
-
-            # 1. Try regex extraction
-            phase_m = re.search(r"Phase\s*\**:\s*\**\s*([A-Za-z_]+)", content, re.I)
-            form_m = re.search(r"Form\s*\**:\s*\**\s*(?:The user'?s form is\s+)?(EXCELLENT|GOOD|POOR|FAIR)", content, re.I)
-            if not form_m:
-                form_m = re.search(r"\b(EXCELLENT|GOOD|POOR|FAIR)\b", content, re.I)
-            score_m = re.search(r"Score\s*\**:\s*\**\s*(\d+)", content, re.I)
-            cue_m = re.search(r"Cue\s*\**:\s*\**\s*[\"\']?([^\"\n\r\.\;]+)[\"\']?", content, re.I)
-
-            if phase_m:
-                phase = phase_m.group(1).upper()
-            if form_m:
-                form = form_m.group(1).upper()
-            if score_m:
-                score = int(score_m.group(1))
-            if cue_m:
-                cue = cue_m.group(1).strip()
-
-            flaws_m = re.search(r"Flaws\s*\**:\s*\**\s*([^\n\r]+)", content, re.I)
-            if flaws_m and "none" not in flaws_m.group(1).lower():
-                flaws = [f.strip() for f in flaws_m.group(1).split(",") if f.strip()]
-
-            # Rep counting logic based on NVIDIA NIM's phase transitions:
-            # Curl: DOWN -> UP -> DOWN = 1 rep
-            # Squat: UP -> DOWN -> UP = 1 rep
-            if current_exercise == "curl":
-                if phase == "UP" and last_phase == "DOWN":
-                    last_phase = "UP"
-                elif phase == "DOWN" and last_phase == "UP":
-                    reps += 1
-                    last_phase = "DOWN"
-                elif phase in ("UP", "DOWN"):
-                    last_phase = phase
-            elif current_exercise == "squat":
-                if phase == "DOWN" and last_phase == "UP":
-                    last_phase = "DOWN"
-                elif phase == "UP" and last_phase == "DOWN":
-                    reps += 1
-                    last_phase = "UP"
-                elif phase in ("UP", "DOWN"):
-                    last_phase = phase
-
-            last_form = form
-            last_score = score
-            last_cue = cue
-            last_flaws = flaws
-
-    except Exception as e:
-        print(f"[NIM LOG] {e}")
+    # 2. Gesture analysis via NVIDIA NIM (checked every 4 frames)
+    gesture = "NONE"
+    if gestures_enabled and frame_counter % 4 == 0:
+        gesture = gesture_engine.detect_gesture(img_b64)
+        if gesture == NimGestureEngine.SWITCH:
+            next_ex = "squat" if pose_engine.exercise == "curl" else "curl"
+            pose_engine.set_exercise(next_ex)
+        elif gesture == NimGestureEngine.RESET:
+            pose_engine.reset_reps()
 
     return jsonify({
-        "exercise": current_exercise,
-        "reps": reps,
-        "phase": last_phase,
-        "form": last_form,
-        "score": last_score,
-        "cue": last_cue,
-        "flaws": last_flaws,
+        "exercise": pose_result["exercise"],
+        "reps": pose_result["reps"],
+        "phase": pose_result["phase"],
+        "form": pose_result["form"],
+        "score": pose_result["score"],
+        "cue": pose_result["cue"],
+        "flaws": pose_result["flaws"],
+        "gesture": gesture
     })
 
 
 @app.route("/switch_exercise", methods=["POST"])
 def switch_exercise():
-    global current_exercise, last_phase
-    current_exercise = "squat" if current_exercise == "curl" else "curl"
-    last_phase = "READY"
-    return jsonify({"exercise": current_exercise})
+    next_ex = "squat" if pose_engine.exercise == "curl" else "curl"
+    pose_engine.set_exercise(next_ex)
+    return jsonify({"exercise": pose_engine.exercise})
 
 
 @app.route("/reset", methods=["POST"])
 def reset():
-    global reps
-    reps = 0
+    pose_engine.reset_reps()
     return jsonify({"status": "ok"})
 
 
