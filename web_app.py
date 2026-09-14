@@ -196,6 +196,9 @@ INDEX_HTML = """
         <button class="btn btn-blue" onclick="togglePlayPause()" id="btn-play">⏸ Pause Video</button>
         <button class="btn btn-dark" onclick="toggleExercise()">🔄 Switch Exercise</button>
         <button class="btn btn-red" onclick="resetReps()">↺ Reset Reps</button>
+        <button class="btn btn-dark" onclick="toggleVoice()" id="btn-voice">🔇 Audio Coach: Off</button>
+        <button class="btn btn-blue" onclick="toggleVisionMode()" id="btn-vision">👁 CV Mode: Skeleton</button>
+        <button class="btn btn-green" onclick="exportReport()">📥 Export Report</button>
     </div>
 
     <div class="footer-note">
@@ -388,11 +391,73 @@ INDEX_HTML = """
             }
         }
 
-        async function resetReps() {
-            showToast('Reps Reset to 0');
-            document.getElementById('stat-reps').innerText = '0';
-            prevReps = 0;
-            await fetch('/reset', { method: 'POST' });
+        let voiceEnabled = false;
+        let lastSpokenTime = 0;
+        let visionModeIndex = 0;
+        const VISION_MODES = ['Skeleton (Exp 6)', 'Contour BBox (Exp 4)', 'Minimal Joint Dots'];
+
+        function toggleVoice() {
+            voiceEnabled = !voiceEnabled;
+            document.getElementById('btn-voice').innerText = voiceEnabled ? '🔊 Audio Coach: ON' : '🔇 Audio Coach: Off';
+            showToast(voiceEnabled ? 'Audio Coach Enabled' : 'Audio Coach Muted');
+            if (voiceEnabled) speak('Audio coach active');
+        }
+
+        function speak(text) {
+            if (!voiceEnabled || !window.speechSynthesis) return;
+            const now = performance.now();
+            if (now - lastSpokenTime < 2400) return; // Debounce speech
+            lastSpokenTime = now;
+            window.speechSynthesis.cancel();
+            const u = new SpeechSynthesisUtterance(text);
+            u.rate = 1.05;
+            u.pitch = 1.0;
+            window.speechSynthesis.speak(u);
+        }
+
+        function toggleVisionMode() {
+            visionModeIndex = (visionModeIndex + 1) % VISION_MODES.length;
+            const mode = VISION_MODES[visionModeIndex];
+            document.getElementById('btn-vision').innerText = '👁 CV: ' + mode;
+            showToast('Vision Mode: ' + mode);
+        }
+
+        function exportReport() {
+            showToast('Generating session report...');
+            const reps = document.getElementById('stat-reps').innerText;
+            const ex = document.getElementById('stat-exercise').innerText;
+            const score = document.getElementById('nim-score').innerText;
+            const cue = document.getElementById('nim-cue').innerText;
+            const details = document.getElementById('nim-details').innerText;
+            const mov = document.getElementById('movement-name').innerText;
+
+            const text = `FITVISION COMPUTER VISION EVALUATION REPORT
+======================================================
+Course: Computer Vision Practicals Integration
+Experiments Demonstrated:
+- Exp 1: Frame Rate (FPS) HUD Overlay
+- Exp 2 & 4: Body Silhouette & Bounding Box Extents
+- Exp 5: 21-Point Hand Skeleton & 5-Finger Articulation
+- Exp 6: 33-Point Pose Detection & Joint Angle Kinematics
+- Advanced: NVIDIA NIM Biomechanics Inference (Llama 3.2 Vision)
+
+WORKOUT SESSION METRICS:
+- Exercise: ${ex}
+- Completed Repetitions: ${reps}
+- Last Recognized Movement: ${mov}
+- NVIDIA NIM Biomechanical Score: ${score}
+- Active AI Coaching Cue: ${cue}
+- Detailed Form Feedback: ${details}
+- Session Timestamp: ${new Date().toLocaleString()}
+======================================================
+Generated automatically by FitVision AI
+`;
+            const blob = new Blob([text], { type: 'text/plain' });
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = `fitvision_report_${ex.toLowerCase()}.txt`;
+            a.click();
+            showToast('Report Downloaded ✅');
         }
 
         async function triggerNimAudit() {
@@ -457,7 +522,10 @@ INDEX_HTML = """
 
                     if (data.reps > prevReps) {
                         prevReps = data.reps;
+                        speak('Rep ' + data.reps + ' complete');
                         triggerNimAudit();
+                    } else if (latestMovement && latestMovement.torso_angle > 35) {
+                        speak('Keep your back straight');
                     }
                 }
             } catch (e) {
@@ -562,6 +630,48 @@ INDEX_HTML = """
                         octx.lineTo(mapX(lms[p2][0]), lms[p2][1]);
                         octx.stroke();
                     }
+                }
+            }
+
+            // Exp 4: Dynamic Athlete Silhouette Bounding Box & Centroid
+            if (VISION_MODES[visionModeIndex] === 'Contour BBox (Exp 4)') {
+                let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+                let validCount = 0;
+                for (const id in lms) {
+                    if (lms[id][2] >= 0.55) {
+                        const x = mapX(lms[id][0]);
+                        const y = lms[id][1];
+                        minX = Math.min(minX, x);
+                        maxX = Math.max(maxX, x);
+                        minY = Math.min(minY, y);
+                        maxY = Math.max(maxY, y);
+                        validCount++;
+                    }
+                }
+                if (validCount >= 4) {
+                    const pad = 18;
+                    const bx = Math.max(0, minX - pad);
+                    const by = Math.max(0, minY - pad);
+                    const bw = Math.min(w - bx, maxX - minX + 2 * pad);
+                    const bh = Math.min(h - by, maxY - minY + 2 * pad);
+
+                    octx.strokeStyle = '#22c55e';
+                    octx.lineWidth = 2.5;
+                    octx.strokeRect(bx, by, bw, bh);
+
+                    octx.fillStyle = 'rgba(34, 197, 94, 0.85)';
+                    octx.fillRect(bx, Math.max(0, by - 22), 195, 22);
+                    octx.fillStyle = '#000000';
+                    octx.font = 'bold 11px sans-serif';
+                    octx.fillText(`ATHLETE BBOX: ${Math.round(bw)}x${Math.round(bh)} (Exp 4)`, bx + 6, Math.max(14, by - 7));
+
+                    // Centroid
+                    const cx = bx + bw / 2;
+                    const cy = by + bh / 2;
+                    octx.fillStyle = '#facc15';
+                    octx.beginPath();
+                    octx.arc(cx, cy, 6, 0, 2 * Math.PI);
+                    octx.fill();
                 }
             }
 
