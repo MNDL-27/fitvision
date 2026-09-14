@@ -1,0 +1,26 @@
+[
+  {
+    "id": "research-stgcn-transformers",
+    "prompt": "Conduct deep technical research on Spatio-Temporal Graph Neural Networks (ST-GCN, 2s-AGCN) and Motion Transformers (PoseFormer, MotionBERT, Motion-X) for human motion detection and exercise form analysis. Write a comprehensive markdown report in research/01_spatio_temporal_models.md covering:\n1. Mathematical formulation of skeletal graphs (spatial adjacency matrix + temporal edges).\n2. Comparison of ST-GCN vs Temporal CNNs (TCN) vs Transformers in latency, parameter size, and accuracy.\n3. Exact architecture and feature engineering needed to apply this to fitness form analysis.\n4. Implementation strategy for real-time edge/browser inference (ONNX export, WebGL/WASM acceleration).\nEnsure research/01_spatio_temporal_models.md is written with thorough technical depth.",
+    "agent": "hermes",
+    "verify": [
+      ["python3", "-c", "import os; assert os.path.exists('research/01_spatio_temporal_models.md') and os.path.getsize('research/01_spatio_temporal_models.md') > 1000"]
+    ]
+  },
+  {
+    "id": "research-repnet-periodicity",
+    "prompt": "Conduct deep technical research on Temporal Self-Similarity Matrices (TSM) and Google's RepNet for counting exercise repetitions and detecting movement cycles in computer vision. Write a comprehensive markdown report in research/02_periodicity_and_rep_counting.md covering:\n1. Mathematical formulation of Temporal Self-Similarity Matrices S[i,j] = sim(f_i, f_j).\n2. How RepNet uses 3D ConvNets / Transformer encoders to predict periodicity and count fractional repetitions without fixed angle thresholds.\n3. Comparison of RepNet vs Peak Detection vs Hysteresis State Machines vs Dynamic Time Warping (DTW).\n4. Hybrid pipeline design: Combining pose landmarks with self-similarity for 100% false-positive-free rep counting.\nEnsure research/02_periodicity_and_rep_counting.md is written with thorough technical depth.",
+    "agent": "hermes",
+    "verify": [
+      ["python3", "-c", "import os; assert os.path.exists('research/02_periodicity_and_rep_counting.md') and os.path.getsize('research/02_periodicity_and_rep_counting.md') > 1000"]
+    ]
+  },
+  {
+    "id": "research-occlusion-invariance",
+    "prompt": "Conduct deep technical research on 2D-to-3D Pose Lifting, Viewpoint Invariance, and Occlusion Compensation in human motion detection. Write a comprehensive markdown report in research/03_occlusion_and_viewpoint_invariance.md covering:\n1. 2D-to-3D Pose Lifting algorithms (VideoPose3D, Simple3DPose, SemGCN) to recover true 3D joint depths from single 2D webcam views.\n2. Normalization strategies: Procrustes Analysis, Torso-length scaling, and camera pitch/yaw compensation to ensure distance/angle invariance.\n3. Handling partial-body occlusion: Kinematic forward/inverse kinematic (FK/IK) constraint solvers and Kalman/Particle filtering when joints exit the frame.\n4. Step-by-step mathematical recipe to integrate into our FitVision codebase.\nEnsure research/03_occlusion_and_viewpoint_invariance.md is written with thorough technical depth.",
+    "agent": "hermes",
+    "verify": [
+      ["python3", "-c", "import os; assert os.path.exists('research/03_occlusion_and_viewpoint_invariance.md') and os.path.getsize('research/03_occlusion_and_viewpoint_invariance.md') > 1000"]
+    ]
+  }
+]
