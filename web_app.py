@@ -13,7 +13,6 @@ CORS(app)
 pose_engine = NimPoseEngine(exercise="curl")
 gesture_engine = NimGestureEngine()
 
-gestures_enabled = True
 frame_counter = 0
 
 INDEX_HTML = """
@@ -24,25 +23,26 @@ INDEX_HTML = """
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>FitVision — 100% NVIDIA NIM Vision AI</title>
     <style>
-        * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; -webkit-tap-highlight-color: transparent; }
         body { background: #050811; color: #f8fafc; min-height: 100vh; display: flex; flex-direction: column; align-items: center; padding: 12px; }
         header { text-align: center; margin-bottom: 8px; width: 100%; max-width: 640px; }
         h1 { font-size: 1.35rem; font-weight: 800; color: #38bdf8; display: flex; align-items: center; justify-content: center; gap: 8px; }
         .badge { font-size: 0.65rem; padding: 3px 8px; border-radius: 9999px; text-transform: uppercase; color: #fff; font-weight: 800; }
         .badge.nim { background: #16a34a; box-shadow: 0 0 12px rgba(22,163,74,0.6); }
 
-        /* Source selector tabs */
-        .source-bar { display: flex; gap: 6px; width: 100%; max-width: 640px; margin-bottom: 8px; overflow-x: auto; }
-        .tab-btn { flex: 1; min-width: 110px; padding: 8px 10px; background: #1e293b; border: 1px solid #334155; border-radius: 8px; color: #94a3b8; font-size: 0.75rem; font-weight: 700; cursor: pointer; text-align: center; white-space: nowrap; transition: 0.15s; }
-        .tab-btn.active { background: #0284c7; color: #fff; border-color: #38bdf8; }
+        /* Toast notifications for button feedback */
+        #toast { position: fixed; top: 16px; background: #0284c7; color: #fff; padding: 8px 16px; border-radius: 9999px; font-weight: 700; font-size: 0.85rem; box-shadow: 0 4px 15px rgba(0,0,0,0.5); z-index: 100; opacity: 0; transition: opacity 0.3s; pointer-events: none; }
+
+        /* Mode Selector Tabs */
+        .source-bar { display: flex; gap: 6px; width: 100%; max-width: 640px; margin-bottom: 8px; }
+        .tab-btn { flex: 1; padding: 10px 6px; background: #1e293b; border: 1px solid #334155; border-radius: 10px; color: #94a3b8; font-size: 0.8rem; font-weight: 700; cursor: pointer; text-align: center; transition: 0.15s; }
+        .tab-btn:active { transform: scale(0.96); }
+        .tab-btn.active { background: #0284c7; color: #fff; border-color: #38bdf8; box-shadow: 0 0 12px rgba(2,132,199,0.5); }
 
         .viewport { position: relative; width: 100%; max-width: 640px; aspect-ratio: 4/3; background: #000; border-radius: 16px; overflow: hidden; box-shadow: 0 12px 35px -5px rgba(0,0,0,0.8); border: 2px solid #1e293b; }
         #video-player { width: 100%; height: 100%; object-fit: cover; display: block; }
-        .overlay-loader { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; background: rgba(5, 8, 17, 0.95); z-index: 10; gap: 12px; }
-        .btn-start { background: #22c55e; color: #000; border: none; padding: 14px 32px; border-radius: 14px; font-size: 1.15rem; font-weight: 800; cursor: pointer; transition: 0.2s; box-shadow: 0 4px 15px rgba(34,197,94,0.5); }
-        .btn-start:active { transform: scale(0.96); }
 
-        .status-pill { position: absolute; top: 12px; left: 12px; background: rgba(15, 23, 42, 0.85); backdrop-filter: blur(8px); border: 1px solid #334155; padding: 6px 12px; border-radius: 9999px; font-size: 0.75rem; font-weight: 700; color: #38bdf8; display: flex; align-items: center; gap: 6px; }
+        .status-pill { position: absolute; top: 12px; left: 12px; background: rgba(15, 23, 42, 0.85); backdrop-filter: blur(8px); border: 1px solid #334155; padding: 6px 12px; border-radius: 9999px; font-size: 0.75rem; font-weight: 700; color: #38bdf8; display: flex; align-items: center; gap: 6px; z-index: 5; }
         .pulse { width: 8px; height: 8px; border-radius: 50%; background: #22c55e; animation: pulse 1.5s infinite; }
         @keyframes pulse { 0% { opacity: 1; transform: scale(1); } 50% { opacity: 0.4; transform: scale(1.3); } 100% { opacity: 1; transform: scale(1); } }
 
@@ -62,40 +62,39 @@ INDEX_HTML = """
         .stat-value.yellow { color: #facc15; }
 
         .controls { display: flex; flex-wrap: wrap; gap: 8px; width: 100%; max-width: 640px; margin-top: 10px; }
-        .btn { flex: 1; min-width: 110px; padding: 12px 8px; border-radius: 10px; border: none; font-weight: 700; font-size: 0.85rem; cursor: pointer; transition: 0.15s; }
+        .btn { flex: 1; min-width: 110px; padding: 14px 10px; border-radius: 12px; border: none; font-weight: 800; font-size: 0.88rem; cursor: pointer; transition: 0.15s; }
+        .btn:active { transform: scale(0.95); opacity: 0.85; }
+        .btn-green { background: #16a34a; color: #fff; box-shadow: 0 4px 12px rgba(22,163,74,0.4); }
         .btn-blue { background: #2563eb; color: #fff; }
-        .btn-green { background: #16a34a; color: #fff; font-weight: 800; }
         .btn-dark { background: #1f2937; color: #f3f4f6; border: 1px solid #374151; }
         .btn-red { background: #dc2626; color: #fff; }
-        .btn:active { transform: scale(0.97); }
 
         #file-input { display: none; }
         .footer-note { width: 100%; max-width: 640px; text-align: center; margin-top: 10px; font-size: 0.75rem; color: #64748b; }
     </style>
 </head>
 <body>
+    <div id="toast">Message</div>
+
     <header>
         <h1>FitVision AI <span class="badge nim">100% NVIDIA NIM Cloud</span></h1>
     </header>
 
-    <!-- Source Selector (Perfect for classroom demo) -->
+    <!-- Source Selector -->
     <div class="source-bar">
-        <button class="tab-btn active" id="tab-curl" onclick="selectDemoVideo('/static/curl.mp4', 'curl', this)">🏋️ Demo Curls</button>
-        <button class="tab-btn" id="tab-squat" onclick="selectDemoVideo('/static/squat.mp4', 'squat', this)">🏋️ Demo Squats</button>
-        <button class="tab-btn" id="tab-upload" onclick="triggerFileUpload(this)">📁 Upload Video</button>
-        <button class="tab-btn" id="tab-camera" onclick="selectLiveCamera(this)">📹 Live Camera</button>
+        <button class="tab-btn active" id="tab-curl" onclick="loadVideo('/static/curl.mp4', 'curl', this)">🏋️ Curls Demo</button>
+        <button class="tab-btn" id="tab-squat" onclick="loadVideo('/static/squat.mp4', 'squat', this)">🏋️ Squats Demo</button>
+        <button class="tab-btn" id="tab-cam" onclick="startCamera(this)">📹 Live Camera</button>
+        <button class="tab-btn" id="tab-upload" onclick="document.getElementById('file-input').click()">📁 Upload</button>
     </div>
     <input type="file" id="file-input" accept="video/*,image/*" onchange="handleFileUpload(event)">
 
     <div class="viewport">
-        <video id="video-player" playsinline autoplay loop muted></video>
+        <!-- Autoplays immediately on page load! -->
+        <video id="video-player" src="/static/curl.mp4" playsinline autoplay loop muted preload="auto"></video>
         <div class="status-pill" id="status-pill">
             <div class="pulse" id="status-pulse"></div>
-            <span id="nim-status-text">NVIDIA NIM: Initializing...</span>
-        </div>
-        <div class="overlay-loader" id="loader">
-            <button class="btn-start" onclick="initStart()">▶ Start AI Analysis</button>
-            <p style="color: #9ca3af; font-size: 0.85rem;">All frames evaluated directly by NVIDIA Llama 3.2 Vision</p>
+            <span id="nim-status-text">NVIDIA NIM: In Sync</span>
         </div>
     </div>
 
@@ -105,8 +104,8 @@ INDEX_HTML = """
             <div class="nim-title">🧠 NVIDIA NIM Biomechanical Posture Capture</div>
             <div class="nim-score" id="nim-score">Score: 100/100</div>
         </div>
-        <div class="nim-cue" id="nim-cue">"Select a demo video or start live camera."</div>
-        <div class="nim-breakdown" id="nim-breakdown">Ready for cloud AI inference via NVIDIA NIM API.</div>
+        <div class="nim-cue" id="nim-cue">"Analyzing athlete posture with NVIDIA Llama 3.2 Vision..."</div>
+        <div class="nim-breakdown" id="nim-breakdown">Connecting to NVIDIA NIM...</div>
     </div>
 
     <div class="stats-grid">
@@ -131,32 +130,30 @@ INDEX_HTML = """
     <div class="controls">
         <button class="btn btn-green" onclick="snapScan()">⚡ Scan Posture Now</button>
         <button class="btn btn-blue" onclick="togglePlayPause()" id="btn-play">⏸ Pause Video</button>
-        <button class="btn btn-dark" onclick="switchExercise()">🔄 Switch Exercise</button>
+        <button class="btn btn-dark" onclick="toggleExercise()">🔄 Switch Exercise</button>
         <button class="btn btn-red" onclick="resetReps()">↺ Reset Reps</button>
     </div>
 
     <div class="footer-note">
-        100% Powered by NVIDIA NIM Cloud (<code>meta/llama-3.2-11b-vision-instruct</code>). Both Pose Biomechanics & Touchless Gestures processed via API.
+        Powered by NVIDIA NIM Cloud (<code>meta/llama-3.2-11b-vision-instruct</code>). Both Pose Biomechanics & Touchless Gestures processed via API.
     </div>
 
     <script>
         const video = document.getElementById('video-player');
-        const loader = document.getElementById('loader');
-
         const sendCanvas = document.createElement('canvas');
         sendCanvas.width = 480;
         sendCanvas.height = 360;
         const sctx = sendCanvas.getContext('2d');
 
-        let active = false;
         let inFlight = false;
-        let isLiveCam = false;
-        let currentMode = 'demo-curl';
+        let isCamera = false;
+        let currentExercise = 'curl';
 
-        // Start with Demo Curls by default so classroom evaluation works instantly!
-        function initStart() {
-            loader.style.display = 'none';
-            selectDemoVideo('/static/curl.mp4', 'curl', document.getElementById('tab-curl'));
+        function showToast(msg) {
+            const t = document.getElementById('toast');
+            t.innerText = msg;
+            t.style.opacity = '1';
+            setTimeout(() => { t.style.opacity = '0'; }, 2000);
         }
 
         function setTabs(activeBtn) {
@@ -164,37 +161,43 @@ INDEX_HTML = """
             if (activeBtn) activeBtn.classList.add('active');
         }
 
-        async function selectDemoVideo(src, ex, btn) {
-            setTabs(btn);
-            stopCameraTracks();
-            isLiveCam = false;
-            video.style.transform = 'none';
-            video.srcObject = null;
-            video.src = src;
-            video.loop = true;
-            await video.play();
-            active = true;
-
-            await fetch('/set_exercise', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ exercise: ex })
-            });
-            document.getElementById('stat-exercise').innerText = ex.toUpperCase();
-            document.getElementById('nim-status-text').innerText = 'NVIDIA NIM: Active (Demo Video)';
-            nimLoop();
-        }
-
-        function stopCameraTracks() {
+        function stopTracks() {
             if (video.srcObject) {
                 video.srcObject.getTracks().forEach(t => t.stop());
                 video.srcObject = null;
             }
         }
 
-        async function selectLiveCamera(btn) {
+        async function loadVideo(url, ex, btn) {
+            showToast('Loading ' + ex.toUpperCase() + ' Demo...');
             setTabs(btn);
-            stopCameraTracks();
+            stopTracks();
+            isCamera = false;
+            video.style.transform = 'none';
+            video.src = url;
+            video.loop = true;
+            video.muted = true;
+            video.load(); // CRITICAL for mobile Safari / iOS!
+            try {
+                await video.play();
+            } catch (e) {
+                console.warn('Autoplay caught:', e);
+            }
+            currentExercise = ex;
+            document.getElementById('stat-exercise').innerText = ex.toUpperCase();
+            document.getElementById('btn-play').innerText = '⏸ Pause Video';
+
+            await fetch('/set_exercise', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ exercise: ex })
+            });
+        }
+
+        async function startCamera(btn) {
+            showToast('Starting Camera...');
+            setTabs(btn);
+            stopTracks();
             video.removeAttribute('src');
             video.loop = false;
             video.style.transform = 'scaleX(-1)';
@@ -206,33 +209,27 @@ INDEX_HTML = """
                 });
                 video.srcObject = stream;
                 await video.play();
-                isLiveCam = true;
-                active = true;
-                document.getElementById('nim-status-text').innerText = 'NVIDIA NIM: Active (Live Camera)';
-                nimLoop();
+                isCamera = true;
+                showToast('Camera Active');
             } catch (err) {
                 alert('Camera access error: ' + err.message);
+                loadVideo('/static/curl.mp4', 'curl', document.getElementById('tab-curl'));
             }
         }
 
-        function triggerFileUpload(btn) {
-            document.getElementById('file-input').click();
-        }
-
-        async function handleFileUpload(e) {
+        function handleFileUpload(e) {
             const file = e.target.files[0];
             if (!file) return;
+            showToast('Loaded ' + file.name);
             setTabs(document.getElementById('tab-upload'));
-            stopCameraTracks();
-            isLiveCam = false;
+            stopTracks();
+            isCamera = false;
             video.style.transform = 'none';
-            video.srcObject = null;
             video.src = URL.createObjectURL(file);
             video.loop = true;
-            await video.play();
-            active = true;
-            document.getElementById('nim-status-text').innerText = 'NVIDIA NIM: Active (Uploaded File)';
-            nimLoop();
+            video.muted = true;
+            video.load();
+            video.play();
         }
 
         function togglePlayPause() {
@@ -240,22 +237,48 @@ INDEX_HTML = """
             if (video.paused) {
                 video.play();
                 btn.innerText = '⏸ Pause Video';
+                showToast('Playing');
             } else {
                 video.pause();
                 btn.innerText = '▶ Play Video';
+                showToast('Paused');
             }
         }
 
+        async function toggleExercise() {
+            const nextEx = currentExercise === 'curl' ? 'squat' : 'curl';
+            showToast('Switching to ' + nextEx.toUpperCase());
+            const tab = nextEx === 'curl' ? document.getElementById('tab-curl') : document.getElementById('tab-squat');
+            const url = nextEx === 'curl' ? '/static/curl.mp4' : '/static/squat.mp4';
+            if (!isCamera) {
+                loadVideo(url, nextEx, tab);
+            } else {
+                currentExercise = nextEx;
+                document.getElementById('stat-exercise').innerText = nextEx.toUpperCase();
+                await fetch('/set_exercise', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ exercise: nextEx })
+                });
+            }
+        }
+
+        async function resetReps() {
+            showToast('Reps Reset to 0');
+            document.getElementById('stat-reps').innerText = '0';
+            await fetch('/reset', { method: 'POST' });
+        }
+
         async function snapScan() {
-            if (!active) return alert('Start video or camera first!');
+            showToast('⚡ Asking NVIDIA NIM...');
             await sendFrameToNim();
         }
 
         async function sendFrameToNim() {
-            if (!active || video.readyState < 2) return;
+            if (inFlight || video.readyState < 2) return;
             inFlight = true;
             document.getElementById('status-pulse').style.background = '#38bdf8';
-            document.getElementById('nim-status-text').innerText = 'NVIDIA NIM: Analyzing frame...';
+            document.getElementById('nim-status-text').innerText = 'NVIDIA NIM: Analyzing...';
 
             sctx.drawImage(video, 0, 0, sendCanvas.width, sendCanvas.height);
             const base64Data = sendCanvas.toDataURL('image/jpeg', 0.65).split(',')[1];
@@ -270,7 +293,7 @@ INDEX_HTML = """
                     const data = await res.json();
                     updateDashboard(data);
                     document.getElementById('status-pulse').style.background = '#22c55e';
-                    document.getElementById('nim-status-text').innerText = data.person_detected ? 'NVIDIA NIM: Posture Captured' : 'NVIDIA NIM: Searching Body';
+                    document.getElementById('nim-status-text').innerText = data.person_detected ? 'NVIDIA NIM: Posture Captured' : 'NVIDIA NIM: In Sync';
                 }
             } catch (e) {
                 console.warn('NIM request error:', e);
@@ -279,14 +302,6 @@ INDEX_HTML = """
             } finally {
                 inFlight = false;
             }
-        }
-
-        async function nimLoop() {
-            if (!active) return;
-            if (!inFlight && !video.paused) {
-                await sendFrameToNim();
-            }
-            setTimeout(nimLoop, 300);
         }
 
         function updateDashboard(data) {
@@ -303,16 +318,18 @@ INDEX_HTML = """
             document.getElementById('nim-breakdown').innerText = 'Posture Assessment: ' + (data.breakdown || 'Posture captured');
         }
 
-        async function switchExercise() {
-            const res = await fetch('/switch_exercise', { method: 'POST' });
-            const data = await res.json();
-            document.getElementById('stat-exercise').innerText = data.exercise.toUpperCase();
+        async function continuousNimLoop() {
+            if (!inFlight && !video.paused) {
+                await sendFrameToNim();
+            }
+            setTimeout(continuousNimLoop, 300);
         }
 
-        async function resetReps() {
-            await fetch('/reset', { method: 'POST' });
-            document.getElementById('stat-reps').innerText = '0';
-        }
+        // Start continuous loop automatically!
+        window.addEventListener('DOMContentLoaded', () => {
+            video.play().catch(() => {});
+            setTimeout(continuousNimLoop, 800);
+        });
     </script>
 </body>
 </html>
