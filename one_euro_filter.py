@@ -28,9 +28,9 @@ class OneEuroFilter:
             t = time.time()
         te = t - self.t_prev
 
-        # Guard against zero or negative delta time
+        # Guard against zero or negative delta time with nominal frame interval
         if te <= 1e-5:
-            return self.x_prev
+            te = 1.0 / 60.0
 
         # Estimate derivative (velocity)
         a_d = self._smoothing_factor(te, self.d_cutoff)
@@ -44,5 +44,8 @@ class OneEuroFilter:
 
         self.x_prev = x_hat
         self.dx_prev = dx_hat
-        self.t_prev = t
+        if t - self.t_prev > 1e-5:
+            self.t_prev = t
+        else:
+            self.t_prev += te
         return x_hat

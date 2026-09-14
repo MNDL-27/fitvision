@@ -10,6 +10,7 @@ from exercise_tracker import ExerciseTracker
 from movement_analyzer import analyze_full_body_movement
 from nvidia_nim import NvidiaNimCoach
 from pose_detector import PoseDetector
+from smooth_motion_engine import HysteresisExerciseEngine, LandmarkSmoother, MovementDebouncer
 
 STATIC_DIR = Path(__file__).parent / "static"
 app = Flask(__name__, static_folder=str(STATIC_DIR))
@@ -24,14 +25,18 @@ hands_detector = mp_hands.Hands(
     static_image_mode=False,
     max_num_hands=2,
     min_detection_confidence=0.35,
-    min_tracking_confidence=0.35
+    min_tracking_confidence=0.35,
 )
 crop_hands_detector = mp_hands.Hands(
     static_image_mode=True,
     max_num_hands=1,
-    min_detection_confidence=0.25
+    min_detection_confidence=0.25,
 )
 
+# Smooth Motion & Hysteresis Engines
+landmark_smoother = LandmarkSmoother(alpha=0.75)
+hysteresis_engine = HysteresisExerciseEngine(exercise="curl")
+movement_debouncer = MovementDebouncer(window_size=5)
 tracker = ExerciseTracker(exercise="curl")
 nim_coach = NvidiaNimCoach()
 
@@ -39,7 +44,7 @@ latest_nim = {
     "score": 100,
     "form": "GOOD",
     "cue": "Stand in frame or select a demo video to begin.",
-    "details": "NVIDIA NIM Cloud Biomechanics ready."
+    "details": "NVIDIA NIM Cloud Biomechanics ready.",
 }
 
 INDEX_HTML = """
@@ -48,7 +53,7 @@ INDEX_HTML = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>FitVision — 33-Point Pose & 5-Finger Hand Tracking</title>
+    <title>FitVision — 60 FPS Fluid Motion & Pose Analysis</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; -webkit-tap-highlight-color: transparent; }
         body { background: #050811; color: #f8fafc; min-height: 100vh; display: flex; flex-direction: column; align-items: center; padding: 10px; }
@@ -117,7 +122,7 @@ INDEX_HTML = """
     <div id="toast">Message</div>
 
     <header>
-        <h1>FitVision AI <span class="badge cv">Pose + 5-Finger Tracking</span> <span class="badge nim">NVIDIA NIM</span></h1>
+        <h1>FitVision AI <span class="badge cv">60 FPS Fluid Motion</span> <span class="badge nim">NVIDIA NIM</span></h1>
     </header>
 
     <!-- Source Selector -->
@@ -134,7 +139,7 @@ INDEX_HTML = """
         <canvas id="overlay"></canvas>
         <div class="status-pill" id="status-pill">
             <div class="pulse" id="status-pulse"></div>
-            <span id="cv-status-text">CV: 33 Points + 5 Fingers Active</span>
+            <span id="cv-status-text">CV: Fluid 60 FPS Tracking</span>
         </div>
     </div>
 
@@ -142,7 +147,7 @@ INDEX_HTML = """
     <div class="movement-card">
         <div class="movement-header">
             <div class="movement-title">Identified Body Movement:</div>
-            <span style="font-size: 0.75rem; color: #4ade80;" id="movement-hand">Hand: All 5 Fingers Tracked</span>
+            <span style="font-size: 0.75rem; color: #4ade80;" id="movement-hand">Hand: 5-Finger Articulation</span>
         </div>
         <div class="movement-name" id="movement-name">Standing / Ready</div>
         <div class="movement-cue" id="movement-cue">Maintain good posture</div>
@@ -177,8 +182,8 @@ INDEX_HTML = """
             <div class="stat-value" id="stat-exercise">CURL</div>
         </div>
         <div class="stat-card">
-            <div class="stat-label">Stage</div>
-            <div class="stat-value yellow" id="stat-stage">READY</div>
+            <div class="stat-label">Movement Phase</div>
+            <div class="stat-value yellow" id="stat-phase">READY</div>
         </div>
         <div class="stat-card">
             <div class="stat-label">Active Angle</div>
@@ -194,7 +199,7 @@ INDEX_HTML = """
     </div>
 
     <div class="footer-note">
-        Computer Vision practical: 33-point Natural Skeleton (Exp 6), 21-point 5-Finger Hand Tracking (Exp 5), FPS HUD (Exp 1), and NVIDIA NIM Biomechanics.
+        Decoupled 60 FPS LERP Client Rendering + 33-point Pose & 21-point Hand Tracking + NVIDIA NIM Biomechanics.
     </div>
 
     <script>
@@ -208,12 +213,23 @@ INDEX_HTML = """
         let inFlight = false;
         let isCamera = false;
         let currentExercise = 'curl';
-        let lastFpsTime = performance.now();
-        let frameCount = 0;
-        let fps = 0;
         let prevReps = 0;
 
-        // Full 33-landmark skeleton connection graph (excluding wrist clusters)
+        // Smooth Interpolation State (Decouples Rendering from Network Latency!)
+        let currentLandmarks = {};
+        let targetLandmarks = {};
+        let currentHands = [];
+        let targetHands = [];
+        let displayAngle = 0.0;
+        let targetAngle = 0.0;
+        let displayProgress = 0.0;
+        let targetProgress = 0.0;
+
+        let lastFpsTime = performance.now();
+        let frameCount = 0;
+        let fps = 60;
+
+        // Full 33-landmark skeleton connection graph
         const FULL_SKELETON_CONNECTIONS = [
             // Face & Head
             [0, 1], [1, 2], [2, 3], [3, 7],
@@ -234,14 +250,14 @@ INDEX_HTML = """
             [28, 30], [28, 32], [30, 32]
         ];
 
-        // Official MediaPipe Hands 21-point connections: ALL 5 FINGERS
+        // 21-point Hand Skeleton: ALL 5 FINGERS (Exp 5)
         const HAND_CONNECTIONS = [
-            [0, 1], [1, 2], [2, 3], [3, 4],       // Thumb (all 4 phalanges)
-            [0, 5], [5, 6], [6, 7], [7, 8],       // Index Finger
-            [0, 9], [9, 10], [10, 11], [11, 12],  // Middle Finger
-            [0, 13], [13, 14], [14, 15], [15, 16],// Ring Finger
-            [0, 17], [17, 18], [18, 19], [19, 20], // Pinky Finger
-            [5, 9], [9, 13], [13, 17]             // Palm knuckles connector
+            [0, 1], [1, 2], [2, 3], [3, 4],        // Thumb
+            [0, 5], [5, 6], [6, 7], [7, 8],        // Index
+            [0, 9], [9, 10], [10, 11], [11, 12],   // Middle
+            [0, 13], [13, 14], [14, 15], [15, 16], // Ring
+            [0, 17], [17, 18], [18, 19], [19, 20], // Pinky
+            [5, 9], [9, 13], [13, 17]              // Knuckles
         ];
 
         function showToast(msg) {
@@ -399,6 +415,7 @@ INDEX_HTML = """
             }
         }
 
+        // Network pipeline: sends frames and receives latest targets
         async function sendCvFrame() {
             if (inFlight || video.readyState < 2) return;
             inFlight = true;
@@ -414,11 +431,14 @@ INDEX_HTML = """
                 });
                 if (res.ok) {
                     const data = await res.json();
-                    renderOverlay(data);
+                    targetLandmarks = data.landmarks || {};
+                    targetHands = data.hands || [];
+                    targetAngle = data.angle || 0.0;
+                    targetProgress = data.progress || 0.0;
+
                     document.getElementById('stat-reps').innerText = data.reps;
                     document.getElementById('stat-exercise').innerText = data.exercise.toUpperCase();
-                    document.getElementById('stat-stage').innerText = data.stage;
-                    document.getElementById('stat-angle').innerText = data.angle + '°';
+                    document.getElementById('stat-phase').innerText = data.stage;
 
                     if (data.movement) {
                         document.getElementById('movement-name').innerText = data.movement.movement;
@@ -444,19 +464,62 @@ INDEX_HTML = """
             }
         }
 
-        function renderOverlay(data) {
-            octx.clearRect(0, 0, overlay.width, overlay.height);
-            if (!data || !data.landmarks) return;
+        // DECOUPLED 60 FPS RENDER LOOP WITH LERP (Linear Interpolation)
+        function render60Fps() {
+            // Measure actual client rendering FPS
+            frameCount++;
+            const now = performance.now();
+            if (now - lastFpsTime >= 1000) {
+                fps = frameCount;
+                frameCount = 0;
+                lastFpsTime = now;
+            }
 
-            const lms = data.landmarks;
+            octx.clearRect(0, 0, overlay.width, overlay.height);
+
+            // Interpolate Angle & Progress
+            displayAngle += (targetAngle - displayAngle) * 0.35;
+            displayProgress += (targetProgress - displayProgress) * 0.35;
+            document.getElementById('stat-angle').innerText = Math.round(displayAngle) + '°';
+
+            // Interpolate Landmark Coordinates (LERP)
+            const lerpFactor = 0.42; // Fast, organic responsiveness
+            for (const id in targetLandmarks) {
+                const target = targetLandmarks[id];
+                if (!currentLandmarks[id]) {
+                    currentLandmarks[id] = [target[0], target[1], target[2]];
+                } else {
+                    currentLandmarks[id][0] += (target[0] - currentLandmarks[id][0]) * lerpFactor;
+                    currentLandmarks[id][1] += (target[1] - currentLandmarks[id][1]) * lerpFactor;
+                    currentLandmarks[id][2] = target[2];
+                }
+            }
+
+            // Interpolate Hand Coordinates
+            if (targetHands && targetHands.length > 0) {
+                if (currentHands.length !== targetHands.length) {
+                    currentHands = JSON.parse(JSON.stringify(targetHands));
+                } else {
+                    for (let h = 0; h < targetHands.length; h++) {
+                        for (let p = 0; p < targetHands[h].length; p++) {
+                            currentHands[h][p][0] += (targetHands[h][p][0] - currentHands[h][p][0]) * lerpFactor;
+                            currentHands[h][p][1] += (targetHands[h][p][1] - currentHands[h][p][1]) * lerpFactor;
+                        }
+                    }
+                }
+            } else {
+                currentHands = [];
+            }
+
             const w = overlay.width;
             const h = overlay.height;
-
             function mapX(x) {
                 return isCamera ? (w - x) : x;
             }
 
-            // 1. Draw Full 33-Point Natural Body Skeleton (Cyan)
+            const lms = currentLandmarks;
+
+            // 1. Draw Full 33-Point Natural Body Skeleton (Smooth Glow)
             octx.strokeStyle = '#06b6d4';
             octx.lineWidth = 3.5;
             octx.lineCap = 'round';
@@ -475,7 +538,7 @@ INDEX_HTML = """
                 }
             }
 
-            // 2. Draw ALL 33 RAW LANDMARK DOTS
+            // 2. Draw ALL 33 RAW LANDMARK DOTS (Color-coded anatomy)
             for (const id_str in lms) {
                 const id = parseInt(id_str);
                 const pt = lms[id];
@@ -503,10 +566,9 @@ INDEX_HTML = """
                 }
             }
 
-            // 3. Draw Complete 21-Point Hand Skeletons (ALL 5 FINGERS) if detected
-            if (data.hands && data.hands.length > 0) {
-                for (const hand of data.hands) {
-                    // Draw finger bones
+            // 3. Draw All 5 Fingers on Hands (Exp 5)
+            if (currentHands && currentHands.length > 0) {
+                for (const hand of currentHands) {
                     octx.strokeStyle = '#38bdf8';
                     octx.lineWidth = 2.5;
                     for (const [p1, p2] of HAND_CONNECTIONS) {
@@ -518,18 +580,14 @@ INDEX_HTML = """
                         }
                     }
 
-                    // Draw all 21 individual finger joints
                     hand.forEach((pt, idx) => {
                         const hx = mapX(pt[0]);
                         const hy = pt[1];
-
-                        // Fingertips: 4 (thumb), 8 (index), 12 (middle), 16 (ring), 20 (pinky)
                         const isTip = [4, 8, 12, 16, 20].includes(idx);
                         octx.fillStyle = isTip ? '#22c55e' : '#facc15';
                         octx.beginPath();
                         octx.arc(hx, hy, isTip ? 4.5 : 3, 0, 2 * Math.PI);
                         octx.fill();
-
                         octx.strokeStyle = '#ffffff';
                         octx.lineWidth = 1;
                         octx.stroke();
@@ -537,11 +595,11 @@ INDEX_HTML = """
                 }
             }
 
-            // 4. Highlight Active Exercise Joint with Angle Arc
-            if (data.active_joint) {
-                const j = data.active_joint;
-                const jx = mapX(j[0]);
-                const jy = j[1];
+            // 4. Highlight Active Joint with Angle Text
+            const activeId = currentExercise === 'curl' ? 13 : 25;
+            if (lms[activeId] && lms[activeId][2] > 0.25) {
+                const jx = mapX(lms[activeId][0]);
+                const jy = lms[activeId][1];
 
                 octx.fillStyle = '#22c55e';
                 octx.beginPath();
@@ -553,50 +611,38 @@ INDEX_HTML = """
 
                 octx.font = 'bold 16px sans-serif';
                 octx.fillStyle = '#ffffff';
-                octx.fillText(data.angle + '°', jx + 14, jy - 8);
+                octx.fillText(Math.round(displayAngle) + '°', jx + 14, jy - 8);
             }
 
-            // 5. Floating Thumbs Up / Gesture Banner if detected
-            if (data.movement && data.movement.is_gesture) {
-                octx.fillStyle = '#eab308';
-                octx.font = 'bold 18px sans-serif';
-                octx.fillText('👍 GESTURE ACTIVE', w / 2 - 80, 42);
-            }
-
-            // 6. Top Status Bar: Local FPS Counter & Landmarks Count
+            // 5. FPS & Locking Status
             octx.fillStyle = '#22c55e';
             octx.font = 'bold 14px monospace';
-            const numHands = (data.hands || []).length;
-            const handLabel = numHands > 0 ? ' | 5-FINGER HANDS: ' + numHands : '';
-            octx.fillText('FPS: ' + fps + ' | 33 BODY POINTS' + handLabel, 12, 24);
+            const count = Object.keys(lms).length;
+            octx.fillText('DISPLAY: ' + fps + ' FPS | 33 POINTS ACTIVE (' + count + ' TRACKED)', 12, 24);
 
-            // 7. Rep Progress Bar along bottom
-            const progress = Math.max(0, Math.min(1, (data.progress || 0) / 100));
+            // 6. Smooth Progress Bar
+            const prog = Math.max(0, Math.min(1, displayProgress / 100));
             octx.fillStyle = '#1e293b';
             octx.fillRect(0, h - 8, w, 8);
             octx.fillStyle = '#22c55e';
-            octx.fillRect(0, h - 8, w * progress, 8);
+            octx.fillRect(0, h - 8, w * prog, 8);
+
+            requestAnimationFrame(render60Fps);
         }
 
-        async function continuousCvLoop() {
-            frameCount++;
-            const now = performance.now();
-            if (now - lastFpsTime >= 1000) {
-                fps = frameCount;
-                frameCount = 0;
-                lastFpsTime = now;
-            }
-
+        // Background network frame sender (runs around 20-30 times/sec)
+        async function networkLoop() {
             if (!inFlight && !video.paused) {
                 await sendCvFrame();
             }
-            setTimeout(continuousCvLoop, 45);
+            setTimeout(networkLoop, 35);
         }
 
         window.addEventListener('DOMContentLoaded', () => {
             syncDimensions();
             video.play().catch(() => {});
-            setTimeout(continuousCvLoop, 500);
+            requestAnimationFrame(render60Fps);
+            setTimeout(networkLoop, 500);
         });
     </script>
 </body>
@@ -633,7 +679,7 @@ def process_frame():
     h, w = frame.shape[:2]
 
     # 1. Full 33-point Pose Landmark Extraction (Exp 6)
-    landmarks_dict = {}
+    raw_landmarks = {}
     active_joint = None
 
     pose_detector.find_pose(frame, draw=False)
@@ -641,7 +687,11 @@ def process_frame():
         for idx, lm in enumerate(pose_detector.results.pose_landmarks.landmark):
             sx = int(lm.x * target_w)
             sy = int(lm.y * target_h)
-            landmarks_dict[idx] = (sx, sy, float(lm.visibility))
+            raw_landmarks[idx] = (sx, sy, float(lm.visibility))
+
+    # Apply Landmark Smoother
+    landmarks_dict = landmark_smoother.smooth(raw_landmarks)
+    print(f"[DEBUG] frame={frame.shape} raw={len(raw_landmarks)} smoothed={len(landmarks_dict)}")
 
     # 2. Complete 21-point Hand & 5-Finger Tracking (Exp 5)
     all_hands = []
@@ -652,8 +702,7 @@ def process_frame():
         for hand in h_res.multi_hand_landmarks:
             all_hands.append([[int(lm.x * target_w), int(lm.y * target_h)] for lm in hand.landmark])
     elif hasattr(pose_detector, "results") and pose_detector.results and pose_detector.results.pose_landmarks:
-        # High-resolution hand crop around detected wrists if full-body camera view
-        for w_idx in [15, 16]:  # Left and Right wrists
+        for w_idx in [15, 16]:
             rw = pose_detector.results.pose_landmarks.landmark[w_idx]
             if rw.visibility > 0.3:
                 cx, cy = int(rw.x * w), int(rw.y * h)
@@ -673,36 +722,33 @@ def process_frame():
                                 pts.append([fx, fy])
                             all_hands.append(pts)
 
-    # 3. Comprehensive Body Movement & Gesture Analysis
-    movement_info = analyze_full_body_movement(landmarks_dict, tracker.exercise)
+    # 3. Comprehensive Movement Analysis & Debouncing
+    raw_movement = analyze_full_body_movement(landmarks_dict, tracker.exercise)
+    stable_movement_name = movement_debouncer.update(raw_movement.get("movement", "Ready"))
+    raw_movement["movement"] = stable_movement_name
 
-    # 4. Update Rep Counter ONLY when NOT in a gesture
-    if landmarks_dict and not movement_info.get("is_gesture", False):
-        status = tracker.update(landmarks_dict)
-    else:
-        status = tracker._status()
+    # 4. Hysteresis Exercise Rep Counting
+    active_angle = raw_movement.get("active_angle", 160.0)
+    is_gesture = raw_movement.get("is_gesture", False)
+    stage, reps, feedback = hysteresis_engine.update(active_angle, is_gesture)
 
-    # Active joint coordinates for visual degree indicator
+    # Calculate smooth progress percentage
     if tracker.exercise == "curl":
-        active_id = 13 if tracker.active_side == "left" else 14
+        progress = float(np.clip(np.interp(active_angle, (45, 140), (100, 0)), 0, 100))
     else:
-        active_id = 25 if tracker.active_side == "left" else 26
-
-    if active_id in landmarks_dict:
-        active_joint = [landmarks_dict[active_id][0], landmarks_dict[active_id][1]]
+        progress = float(np.clip(np.interp(active_angle, (95, 155), (100, 0)), 0, 100))
 
     return jsonify({
         "landmarks": landmarks_dict,
         "hands": all_hands,
-        "active_joint": active_joint,
         "active_side": tracker.active_side,
-        "movement": movement_info,
-        "reps": status["reps"],
-        "exercise": status["exercise"],
-        "stage": status["stage"],
-        "feedback": status["feedback"],
-        "angle": status["angle"],
-        "progress": status["progress"],
+        "movement": raw_movement,
+        "reps": reps,
+        "exercise": tracker.exercise,
+        "stage": stage,
+        "feedback": feedback,
+        "angle": round(active_angle, 1),
+        "progress": round(progress, 1),
     })
 
 
@@ -725,6 +771,7 @@ def set_exercise():
     data = request.get_json(force=True)
     ex = data.get("exercise", "curl")
     tracker.set_exercise(ex)
+    hysteresis_engine.set_exercise(ex)
     return jsonify({"exercise": tracker.exercise})
 
 
@@ -732,12 +779,14 @@ def set_exercise():
 def switch_exercise():
     next_ex = "squat" if tracker.exercise == "curl" else "curl"
     tracker.set_exercise(next_ex)
+    hysteresis_engine.set_exercise(next_ex)
     return jsonify({"exercise": tracker.exercise})
 
 
 @app.route("/reset", methods=["POST"])
 def reset():
     tracker.reps = 0
+    hysteresis_engine.reps = 0
     return jsonify({"status": "ok"})
 
 
