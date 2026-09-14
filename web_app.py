@@ -134,30 +134,91 @@ INDEX_HTML = """
         let active = false;
         let inFlight = false;
         let currentFacingMode = 'user';
+        let videoDevices = [];
+        let currentDeviceIndex = 0;
+        let loopStarted = false;
 
-        async function startCamera() {
+        async function initCameraDevices() {
             try {
-                const stream = await navigator.mediaDevices.getUserMedia({
-                    video: { facingMode: currentFacingMode, width: { ideal: 640 }, height: { ideal: 480 } },
-                    audio: false
-                });
+                if (navigator.mediaDevices && navigator.mediaDevices.enumerateDevices) {
+                    const devices = await navigator.mediaDevices.enumerateDevices();
+                    videoDevices = devices.filter(d => d.kind === 'videoinput');
+                }
+            } catch (e) {
+                console.warn('Device enum error:', e);
+            }
+        }
+
+        async function startCamera(deviceId = null) {
+            try {
+                if (video.srcObject) {
+                    const tracks = video.srcObject.getTracks();
+                    tracks.forEach(t => t.stop());
+                    video.srcObject = null;
+                }
+
+                let constraints = { audio: false };
+                if (deviceId) {
+                    constraints.video = {
+                        deviceId: { exact: deviceId },
+                        width: { ideal: 640 },
+                        height: { ideal: 480 }
+                    };
+                } else {
+                    constraints.video = {
+                        facingMode: currentFacingMode === 'user' ? 'user' : { ideal: 'environment' },
+                        width: { ideal: 640 },
+                        height: { ideal: 480 }
+                    };
+                }
+
+                const stream = await navigator.mediaDevices.getUserMedia(constraints);
                 video.srcObject = stream;
                 await video.play();
+
+                // Apply mirror only for front camera
+                const track = stream.getVideoTracks()[0];
+                const settings = track && track.getSettings ? track.getSettings() : {};
+                const isFront = (settings.facingMode === 'user') || (currentFacingMode === 'user');
+                video.style.transform = isFront ? 'scaleX(-1)' : 'none';
+
                 active = true;
                 loader.style.display = 'none';
                 document.getElementById('nim-status-text').innerText = 'NVIDIA NIM: Active';
-                nimLoop();
+
+                await initCameraDevices();
+                if (!loopStarted) {
+                    loopStarted = true;
+                    nimLoop();
+                }
             } catch (err) {
+                console.error('Camera switch error:', err);
+                if (deviceId) {
+                    // Fallback to generic request if exact deviceId failed
+                    return startCamera(null);
+                }
                 alert('Camera access error: ' + err.message);
             }
         }
 
         async function flipCamera() {
-            currentFacingMode = currentFacingMode === 'user' ? 'environment' : 'user';
-            if (active && video.srcObject) {
-                video.srcObject.getTracks().forEach(t => t.stop());
-                startCamera();
+            const btn = document.querySelector('button[onclick="flipCamera()"]');
+            if (btn) btn.innerText = '📷 Switching...';
+
+            await initCameraDevices();
+
+            if (videoDevices.length > 1) {
+                currentDeviceIndex = (currentDeviceIndex + 1) % videoDevices.length;
+                const nextDev = videoDevices[currentDeviceIndex];
+                const label = (nextDev.label || '').toLowerCase();
+                currentFacingMode = (label.includes('back') || label.includes('rear') || label.includes('environment')) ? 'environment' : 'user';
+                await startCamera(nextDev.deviceId);
+            } else {
+                currentFacingMode = (currentFacingMode === 'user') ? 'environment' : 'user';
+                await startCamera(null);
             }
+
+            if (btn) btn.innerText = '📷 Flip Camera';
         }
 
         async function nimLoop() {
