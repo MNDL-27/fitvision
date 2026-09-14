@@ -35,7 +35,8 @@ class NimPoseEngine:
         self.last_form = "GOOD"
         self.last_score = 85
         self.last_cue = "Stand in frame to begin"
-        self.last_flaws = []
+        self.last_breakdown = "Searching for posture..."
+        self.person_detected = False
 
     def set_exercise(self, exercise: str):
         self.exercise = exercise.lower()
@@ -58,34 +59,40 @@ class NimPoseEngine:
                 "form": "ERROR",
                 "score": 0,
                 "cue": "NVIDIA Key Missing",
-                "flaws": ["Missing API Key"],
+                "breakdown": "Please check API key in .env",
+                "person_detected": False,
             }
-
-        prompt = (
-            f"You are an elite Computer Vision fitness coach analyzing exercise: {self.exercise.upper()}.\n"
-            "Analyze the person in this image.\n"
-            "Evaluate:\n"
-            "1. Person: True/False\n"
-            "2. Phase: 'UP', 'DOWN', or 'IN_BETWEEN'\n"
-            "3. Form: 'EXCELLENT', 'GOOD', or 'POOR'\n"
-            "4. Score: 0-100\n"
-            "5. Cue: coaching cue under 12 words\n"
-            "6. Flaws: list defects or None"
-        )
 
         payload = {
             "model": MODEL,
             "messages": [
                 {
+                    "role": "system",
+                    "content": (
+                        "You are an elite Computer Vision AI fitness coach. "
+                        "Evaluate the person in this workout frame. "
+                        "You must output a single JSON object with keys: "
+                        "person_detected (bool), "
+                        'posture_rating ("EXCELLENT"|"GOOD"|"POOR"|"NOT_DETECTED"), '
+                        'phase ("UP"|"DOWN"|"IN_BETWEEN"), '
+                        "score (int 0-100), "
+                        "cue (string under 12 words direct coaching tip), "
+                        "breakdown (string describing posture: back straightness, elbows, knees, depth)."
+                    ),
+                },
+                {
                     "role": "user",
                     "content": [
-                        {"type": "text", "text": prompt},
-                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}}
-                    ]
-                }
+                        {
+                            "type": "text",
+                            "text": f"Analyze this workout frame for exercise: {self.exercise.upper()}. Return ONLY the JSON object.",
+                        },
+                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}},
+                    ],
+                },
             ],
             "temperature": 0.1,
-            "max_tokens": 160
+            "max_tokens": 200,
         }
 
         req = urllib.request.Request(
@@ -94,8 +101,8 @@ class NimPoseEngine:
             headers={
                 "Content-Type": "application/json",
                 "Authorization": f"Bearer {self.api_key}",
-                "User-Agent": "FitVision-NimPoseEngine/1.0"
-            }
+                "User-Agent": "FitVision-NimPoseEngine/1.0",
+            },
         )
 
         try:
@@ -113,36 +120,50 @@ class NimPoseEngine:
                 "form": self.last_form,
                 "score": self.last_score,
                 "cue": self.last_cue,
-                "flaws": self.last_flaws,
+                "breakdown": self.last_breakdown,
+                "person_detected": self.person_detected,
             }
 
     def _parse_and_update(self, content: str) -> dict:
-        phase = "IN_BETWEEN"
-        form = "GOOD"
-        score = 85
-        cue = "Maintain steady cadence"
-        flaws = []
+        phase = self.last_phase
+        form = self.last_form
+        score = self.last_score
+        cue = self.last_cue
+        breakdown = self.last_breakdown
+        person_detected = False
 
-        phase_m = re.search(r"Phase\s*\**:\s*\**\s*([A-Za-z_]+)", content, re.I)
-        form_m = re.search(r"\b(EXCELLENT|GOOD|POOR|FAIR)\b", content, re.I)
-        score_m = re.search(r"Score\s*\**:\s*\**\s*(\d+)", content, re.I)
-        cue_m = re.search(r"Cue\s*\**:\s*\**\s*[\"\']?([^\"\n\r\.\;]+)[\"\']?", content, re.I)
-        flaws_m = re.search(r"Flaws\s*\**:\s*\**\s*([^\n\r]+)", content, re.I)
+        # 1. Look for JSON block
+        m = re.search(r"(\{[\s\S]*\})", content)
+        if m:
+            try:
+                parsed = json.loads(m.group(1))
+                person_detected = bool(parsed.get("person_detected", True))
+                phase = str(parsed.get("phase", phase)).upper()
+                form = str(parsed.get("posture_rating", parsed.get("form", form))).upper()
+                score = int(parsed.get("score", score))
+                cue = str(parsed.get("cue", cue))
+                breakdown = str(parsed.get("breakdown", breakdown))
+            except Exception:
+                pass
 
-        if phase_m:
-            phase = phase_m.group(1).upper()
-        if form_m:
-            form = form_m.group(1).upper()
-        if score_m:
-            score = int(score_m.group(1))
-        if cue_m:
-            cue = cue_m.group(1).strip()
-        if flaws_m and "none" not in flaws_m.group(1).lower():
-            flaws = [f.strip() for f in flaws_m.group(1).split(",") if f.strip()]
+        # 2. Fallback regex extraction if JSON incomplete
+        if not m:
+            phase_m = re.search(r"Phase\s*\**:\s*\**\s*([A-Za-z_]+)", content, re.I)
+            form_m = re.search(r"\b(EXCELLENT|GOOD|POOR|NOT_DETECTED)\b", content, re.I)
+            score_m = re.search(r"Score\s*\**:\s*\**\s*(\d+)", content, re.I)
+            cue_m = re.search(r"Cue\s*\**:\s*\**\s*[\"\']?([^\"\n\r\.\;]+)[\"\']?", content, re.I)
 
-        # Rep counting through NVIDIA NIM phase transitions:
-        # Curl: DOWN -> UP -> DOWN = 1 rep
-        # Squat: UP -> DOWN -> UP = 1 rep
+            if phase_m:
+                phase = phase_m.group(1).upper()
+            if form_m:
+                form = form_m.group(1).upper()
+            if score_m:
+                score = int(score_m.group(1))
+            if cue_m:
+                cue = cue_m.group(1).strip()
+            person_detected = True
+
+        # Rep counting based on NVIDIA NIM movement transitions
         if self.exercise == "curl":
             if phase == "UP" and self.last_phase == "DOWN":
                 self.last_phase = "UP"
@@ -160,10 +181,11 @@ class NimPoseEngine:
             elif phase in ("UP", "DOWN"):
                 self.last_phase = phase
 
+        self.person_detected = person_detected
         self.last_form = form
         self.last_score = score
         self.last_cue = cue
-        self.last_flaws = flaws
+        self.last_breakdown = breakdown
 
         return {
             "success": True,
@@ -173,5 +195,6 @@ class NimPoseEngine:
             "form": self.last_form,
             "score": self.last_score,
             "cue": self.last_cue,
-            "flaws": self.last_flaws,
+            "breakdown": self.last_breakdown,
+            "person_detected": self.person_detected,
         }

@@ -11,7 +11,6 @@ CORS(app)
 pose_engine = NimPoseEngine(exercise="curl")
 gesture_engine = NimGestureEngine()
 
-paused = False
 gestures_enabled = True
 frame_counter = 0
 
@@ -40,14 +39,13 @@ INDEX_HTML = """
         .pulse { width: 8px; height: 8px; border-radius: 50%; background: #22c55e; animation: pulse 1.5s infinite; }
         @keyframes pulse { 0% { opacity: 1; transform: scale(1); } 50% { opacity: 0.4; transform: scale(1.3); } 100% { opacity: 1; transform: scale(1); } }
 
-        /* Real-Time NVIDIA Coach Card */
-        .nim-card { width: 100%; max-width: 640px; background: #0f172a; border: 1px solid #22c55e; border-radius: 14px; padding: 14px; margin-top: 10px; box-shadow: 0 4px 25px rgba(34,197,94,0.15); }
+        /* Posture Assessment Card */
+        .nim-card { width: 100%; max-width: 640px; background: #0f172a; border: 2px solid #22c55e; border-radius: 14px; padding: 14px; margin-top: 10px; box-shadow: 0 4px 25px rgba(34,197,94,0.15); }
         .nim-header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #1e293b; padding-bottom: 8px; margin-bottom: 10px; }
         .nim-title { font-size: 0.9rem; font-weight: 800; color: #4ade80; display: flex; align-items: center; gap: 6px; }
         .nim-score { font-size: 0.95rem; font-weight: 800; color: #facc15; }
-        .nim-cue { font-size: 1.05rem; font-weight: 800; color: #f8fafc; margin-bottom: 6px; line-height: 1.3; }
-        .nim-flaws { font-size: 0.8rem; color: #f87171; font-weight: 600; display: flex; gap: 6px; flex-wrap: wrap; }
-        .flaw-tag { background: rgba(239, 68, 68, 0.15); border: 1px solid #ef4444; padding: 2px 8px; border-radius: 6px; }
+        .nim-cue { font-size: 1.1rem; font-weight: 800; color: #f8fafc; margin-bottom: 6px; line-height: 1.3; }
+        .nim-breakdown { font-size: 0.85rem; color: #94a3b8; line-height: 1.4; background: #1e293b; padding: 8px 10px; border-radius: 8px; margin-top: 6px; }
 
         .stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; width: 100%; max-width: 640px; margin-top: 10px; }
         .stat-card { background: #111827; padding: 8px 6px; border-radius: 12px; border: 1px solid #1f2937; text-align: center; }
@@ -60,6 +58,7 @@ INDEX_HTML = """
         .btn { flex: 1; min-width: 120px; padding: 12px 8px; border-radius: 10px; border: none; font-weight: 700; font-size: 0.85rem; cursor: pointer; transition: 0.15s; }
         .btn-blue { background: #2563eb; color: #fff; }
         .btn-dark { background: #1f2937; color: #f3f4f6; border: 1px solid #374151; }
+        .btn-green { background: #16a34a; color: #fff; font-weight: 800; }
         .btn-red { background: #dc2626; color: #fff; }
         .btn:active { transform: scale(0.97); }
 
@@ -79,18 +78,18 @@ INDEX_HTML = """
         </div>
         <div class="overlay-loader" id="loader">
             <button class="btn-start" onclick="startCamera()">📷 Launch Camera</button>
-            <p style="color: #9ca3af; font-size: 0.85rem;">All tasks computed via NVIDIA NIM Cloud Vision API</p>
+            <p style="color: #9ca3af; font-size: 0.85rem;">Step back 1.5 - 2 meters so your body is in view</p>
         </div>
     </div>
 
     <!-- Live NVIDIA NIM Coach Card -->
     <div class="nim-card">
         <div class="nim-header">
-            <div class="nim-title">⚡ NVIDIA Biomechanical Analysis</div>
+            <div class="nim-title">🧠 NVIDIA NIM Biomechanical Posture Capture</div>
             <div class="nim-score" id="nim-score">Score: 100/100</div>
         </div>
         <div class="nim-cue" id="nim-cue">"Stand in front of the camera and begin your set."</div>
-        <div class="nim-flaws" id="nim-flaws"></div>
+        <div class="nim-breakdown" id="nim-breakdown">Searching for posture...</div>
     </div>
 
     <div class="stats-grid">
@@ -107,13 +106,14 @@ INDEX_HTML = """
             <div class="stat-value yellow" id="stat-phase">READY</div>
         </div>
         <div class="stat-card">
-            <div class="stat-label">Form Rating</div>
+            <div class="stat-label">Posture Rating</div>
             <div class="stat-value" id="stat-form" style="color: #38bdf8;">GOOD</div>
         </div>
     </div>
 
     <div class="controls">
         <button class="btn btn-blue" onclick="switchExercise()">🔄 Switch Exercise</button>
+        <button class="btn btn-green" onclick="snapScan()">⚡ Scan Posture Now</button>
         <button class="btn btn-dark" onclick="flipCamera()">📷 Flip Camera</button>
         <button class="btn btn-red" onclick="resetReps()">↺ Reset Reps</button>
     </div>
@@ -176,7 +176,6 @@ INDEX_HTML = """
                 video.srcObject = stream;
                 await video.play();
 
-                // Apply mirror only for front camera
                 const track = stream.getVideoTracks()[0];
                 const settings = track && track.getSettings ? track.getSettings() : {};
                 const isFront = (settings.facingMode === 'user') || (currentFacingMode === 'user');
@@ -192,9 +191,8 @@ INDEX_HTML = """
                     nimLoop();
                 }
             } catch (err) {
-                console.error('Camera switch error:', err);
+                console.error('Camera access error:', err);
                 if (deviceId) {
-                    // Fallback to generic request if exact deviceId failed
                     return startCamera(null);
                 }
                 alert('Camera access error: ' + err.message);
@@ -221,41 +219,47 @@ INDEX_HTML = """
             if (btn) btn.innerText = '📷 Flip Camera';
         }
 
+        async function snapScan() {
+            if (!active) return alert('Start camera first!');
+            await sendFrameToNim();
+        }
+
+        async function sendFrameToNim() {
+            if (!active || video.readyState < 2) return;
+            inFlight = true;
+            document.getElementById('status-pulse').style.background = '#38bdf8';
+            document.getElementById('nim-status-text').innerText = 'NVIDIA NIM: Analyzing frame...';
+
+            sctx.drawImage(video, 0, 0, sendCanvas.width, sendCanvas.height);
+            const base64Data = sendCanvas.toDataURL('image/jpeg', 0.65).split(',')[1];
+
+            try {
+                const res = await fetch('/process_nim', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ image: base64Data })
+                });
+                if (res.ok) {
+                    const data = await res.json();
+                    updateDashboard(data);
+                    document.getElementById('status-pulse').style.background = '#22c55e';
+                    document.getElementById('nim-status-text').innerText = data.person_detected ? 'NVIDIA NIM: Posture Captured' : 'NVIDIA NIM: Searching Body';
+                }
+            } catch (e) {
+                console.warn('NIM request error:', e);
+                document.getElementById('status-pulse').style.background = '#ef4444';
+                document.getElementById('nim-status-text').innerText = 'NVIDIA NIM: Retrying...';
+            } finally {
+                inFlight = false;
+            }
+        }
+
         async function nimLoop() {
             if (!active) return;
-
-            if (!inFlight && video.readyState >= 2) {
-                inFlight = true;
-                document.getElementById('status-pulse').style.background = '#38bdf8';
-                document.getElementById('nim-status-text').innerText = 'NVIDIA NIM: Evaluating frame...';
-
-                // Grab frame
-                sctx.drawImage(video, 0, 0, sendCanvas.width, sendCanvas.height);
-                const base64Data = sendCanvas.toDataURL('image/jpeg', 0.65).split(',')[1];
-
-                try {
-                    const res = await fetch('/process_nim', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ image: base64Data })
-                    });
-                    if (res.ok) {
-                        const data = await res.json();
-                        updateDashboard(data);
-                        document.getElementById('status-pulse').style.background = '#22c55e';
-                        document.getElementById('nim-status-text').innerText = 'NVIDIA NIM: In Sync';
-                    }
-                } catch (e) {
-                    console.warn('NIM request error:', e);
-                    document.getElementById('status-pulse').style.background = '#ef4444';
-                    document.getElementById('nim-status-text').innerText = 'NVIDIA NIM: Retrying...';
-                } finally {
-                    inFlight = false;
-                }
+            if (!inFlight) {
+                await sendFrameToNim();
             }
-
-            // Loop continuously
-            setTimeout(nimLoop, 150);
+            setTimeout(nimLoop, 300);
         }
 
         function updateDashboard(data) {
@@ -264,24 +268,12 @@ INDEX_HTML = """
             document.getElementById('stat-phase').innerText = data.phase;
             document.getElementById('stat-form').innerText = data.form;
 
-            const formColor = data.form === 'EXCELLENT' || data.form === 'GOOD' ? '#4ade80' : '#ef4444';
+            const formColor = data.form === 'EXCELLENT' || data.form === 'GOOD' ? '#4ade80' : (data.form === 'POOR' ? '#ef4444' : '#38bdf8');
             document.getElementById('stat-form').style.color = formColor;
 
             document.getElementById('nim-score').innerText = 'Score: ' + data.score + '/100 (' + data.form + ')';
             document.getElementById('nim-cue').innerText = '"' + data.cue + '"';
-
-            const flawsEl = document.getElementById('nim-flaws');
-            flawsEl.innerHTML = '';
-            if (data.flaws && data.flaws.length) {
-                data.flaws.forEach(f => {
-                    if (f && f.trim()) {
-                        const span = document.createElement('span');
-                        span.className = 'flaw-tag';
-                        span.innerText = '⚠️ ' + f;
-                        flawsEl.appendChild(span);
-                    }
-                });
-            }
+            document.getElementById('nim-breakdown').innerText = 'Posture Assessment: ' + (data.breakdown || 'Posture captured');
 
             if (data.gesture && data.gesture !== 'NONE') {
                 document.getElementById('nim-status-text').innerText = 'Gesture Detected: ' + data.gesture;
@@ -323,9 +315,9 @@ def process_nim():
     # 1. Pose, movement phase, form & rep analysis (100% via NVIDIA NIM)
     pose_result = pose_engine.analyze_frame(img_b64)
 
-    # 2. Gesture analysis via NVIDIA NIM (checked every 4 frames)
+    # 2. Gesture analysis via NVIDIA NIM (checked periodically)
     gesture = "NONE"
-    if gestures_enabled and frame_counter % 4 == 0:
+    if gestures_enabled and frame_counter % 5 == 0:
         gesture = gesture_engine.detect_gesture(img_b64)
         if gesture == NimGestureEngine.SWITCH:
             next_ex = "squat" if pose_engine.exercise == "curl" else "curl"
@@ -340,7 +332,8 @@ def process_nim():
         "form": pose_result["form"],
         "score": pose_result["score"],
         "cue": pose_result["cue"],
-        "flaws": pose_result["flaws"],
+        "breakdown": pose_result.get("breakdown", "Posture captured"),
+        "person_detected": pose_result.get("person_detected", False),
         "gesture": gesture
     })
 
