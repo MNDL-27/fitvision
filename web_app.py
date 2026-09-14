@@ -1,6 +1,7 @@
 import base64
 from pathlib import Path
 import cv2
+import mediapipe as mp
 import numpy as np
 from flask import Flask, jsonify, render_template_string, request, send_from_directory
 from flask_cors import CORS
@@ -16,6 +17,21 @@ CORS(app)
 
 # BlazePose Full (complexity=1) for complete 33-point body tracking
 pose_detector = PoseDetector(complexity=1, detection_con=0.35, track_con=0.35)
+
+# MediaPipe Hands (Exp 5: Hand Tracking) for all 5 fingers & 21 landmarks
+mp_hands = mp.solutions.hands
+hands_detector = mp_hands.Hands(
+    static_image_mode=False,
+    max_num_hands=2,
+    min_detection_confidence=0.35,
+    min_tracking_confidence=0.35
+)
+crop_hands_detector = mp_hands.Hands(
+    static_image_mode=True,
+    max_num_hands=1,
+    min_detection_confidence=0.25
+)
+
 tracker = ExerciseTracker(exercise="curl")
 nim_coach = NvidiaNimCoach()
 
@@ -32,7 +48,7 @@ INDEX_HTML = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>FitVision — Full-Body AI Movement & Pose Analysis</title>
+    <title>FitVision — 33-Point Pose & 5-Finger Hand Tracking</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; -webkit-tap-highlight-color: transparent; }
         body { background: #050811; color: #f8fafc; min-height: 100vh; display: flex; flex-direction: column; align-items: center; padding: 10px; }
@@ -101,7 +117,7 @@ INDEX_HTML = """
     <div id="toast">Message</div>
 
     <header>
-        <h1>FitVision AI <span class="badge cv">Full 33-Point Pose</span> <span class="badge nim">NVIDIA NIM</span></h1>
+        <h1>FitVision AI <span class="badge cv">Pose + 5-Finger Tracking</span> <span class="badge nim">NVIDIA NIM</span></h1>
     </header>
 
     <!-- Source Selector -->
@@ -118,7 +134,7 @@ INDEX_HTML = """
         <canvas id="overlay"></canvas>
         <div class="status-pill" id="status-pill">
             <div class="pulse" id="status-pulse"></div>
-            <span id="cv-status-text">CV: Tracking All 33 Points</span>
+            <span id="cv-status-text">CV: 33 Points + 5 Fingers Active</span>
         </div>
     </div>
 
@@ -126,7 +142,7 @@ INDEX_HTML = """
     <div class="movement-card">
         <div class="movement-header">
             <div class="movement-title">Identified Body Movement:</div>
-            <span style="font-size: 0.75rem; color: #4ade80;" id="movement-hand">Hand: Supinated</span>
+            <span style="font-size: 0.75rem; color: #4ade80;" id="movement-hand">Hand: All 5 Fingers Tracked</span>
         </div>
         <div class="movement-name" id="movement-name">Standing / Ready</div>
         <div class="movement-cue" id="movement-cue">Maintain good posture</div>
@@ -178,7 +194,7 @@ INDEX_HTML = """
     </div>
 
     <div class="footer-note">
-        Complete 33-point Natural Skeleton (Exp 6), Hand Grip Orientation (Exp 5), and NVIDIA NIM Biomechanics.
+        Computer Vision practical: 33-point Natural Skeleton (Exp 6), 21-point 5-Finger Hand Tracking (Exp 5), FPS HUD (Exp 1), and NVIDIA NIM Biomechanics.
     </div>
 
     <script>
@@ -197,7 +213,7 @@ INDEX_HTML = """
         let fps = 0;
         let prevReps = 0;
 
-        // Full official 33-landmark skeleton connection graph (All 35 natural bone connections)
+        // Full 33-landmark skeleton connection graph (excluding wrist clusters)
         const FULL_SKELETON_CONNECTIONS = [
             // Face & Head
             [0, 1], [1, 2], [2, 3], [3, 7],
@@ -207,9 +223,6 @@ INDEX_HTML = """
             [11, 12],
             [11, 13], [13, 15],
             [12, 14], [14, 16],
-            // Hands & Fingers
-            [15, 17], [15, 19], [15, 21], [17, 19],
-            [16, 18], [16, 20], [16, 22], [18, 20],
             // Torso & Spine
             [11, 23], [12, 24],
             [23, 24],
@@ -219,6 +232,16 @@ INDEX_HTML = """
             // Feet & Toes
             [27, 29], [27, 31], [29, 31],
             [28, 30], [28, 32], [30, 32]
+        ];
+
+        // Official MediaPipe Hands 21-point connections: ALL 5 FINGERS
+        const HAND_CONNECTIONS = [
+            [0, 1], [1, 2], [2, 3], [3, 4],       // Thumb (all 4 phalanges)
+            [0, 5], [5, 6], [6, 7], [7, 8],       // Index Finger
+            [0, 9], [9, 10], [10, 11], [11, 12],  // Middle Finger
+            [0, 13], [13, 14], [14, 15], [15, 16],// Ring Finger
+            [0, 17], [17, 18], [18, 19], [19, 20], // Pinky Finger
+            [5, 9], [9, 13], [13, 17]             // Palm knuckles connector
         ];
 
         function showToast(msg) {
@@ -397,11 +420,11 @@ INDEX_HTML = """
                     document.getElementById('stat-stage').innerText = data.stage;
                     document.getElementById('stat-angle').innerText = data.angle + '°';
 
-                    // Update full movement card
                     if (data.movement) {
                         document.getElementById('movement-name').innerText = data.movement.movement;
                         document.getElementById('movement-cue').innerText = data.movement.posture_cue;
-                        document.getElementById('movement-hand').innerText = 'Hand: ' + data.movement.hand_state;
+                        const handDesc = (data.hands && data.hands.length > 0) ? 'All 5 Fingers Articulated (' + data.hands.length + ' Hand' + (data.hands.length > 1 ? 's' : '') + ')' : data.movement.hand_state;
+                        document.getElementById('movement-hand').innerText = 'Hand: ' + handDesc;
                         document.getElementById('ang-larm').innerText = data.movement.left_arm + '°';
                         document.getElementById('ang-rarm').innerText = data.movement.right_arm + '°';
                         document.getElementById('ang-lknee').innerText = data.movement.left_knee + '°';
@@ -433,7 +456,7 @@ INDEX_HTML = """
                 return isCamera ? (w - x) : x;
             }
 
-            // 1. Draw Full 35 Natural Skeleton Connections (Cyan)
+            // 1. Draw Full 33-Point Natural Body Skeleton (Cyan)
             octx.strokeStyle = '#06b6d4';
             octx.lineWidth = 3.5;
             octx.lineCap = 'round';
@@ -452,7 +475,7 @@ INDEX_HTML = """
                 }
             }
 
-            // 2. Draw ALL 33 RAW LANDMARK DOTS (Color-coded by anatomy)
+            // 2. Draw ALL 33 RAW LANDMARK DOTS
             for (const id_str in lms) {
                 const id = parseInt(id_str);
                 const pt = lms[id];
@@ -461,23 +484,18 @@ INDEX_HTML = """
                     const px = mapX(pt[0]);
                     const py = pt[1];
 
-                    // Outer white glow
+                    // Outer white ring
                     octx.fillStyle = '#ffffff';
                     octx.beginPath();
                     octx.arc(px, py, 5.5, 0, 2 * Math.PI);
                     octx.fill();
 
-                    // Inner color by body section:
-                    // 0-10: Face (Yellow)
-                    // 11-16: Arms & Shoulders (Pink)
-                    // 17-22: Hands (Cyan)
-                    // 23-28: Hips & Legs (Green)
-                    // 29-32: Feet (Orange)
-                    if (id <= 10) octx.fillStyle = '#facc15';
-                    else if (id <= 16) octx.fillStyle = '#ec4899';
-                    else if (id <= 22) octx.fillStyle = '#38bdf8';
-                    else if (id <= 28) octx.fillStyle = '#22c55e';
-                    else octx.fillStyle = '#f97316';
+                    // Inner anatomy colors
+                    if (id <= 10) octx.fillStyle = '#facc15';      // Face: Yellow
+                    else if (id <= 16) octx.fillStyle = '#ec4899'; // Arms & Shoulders: Pink
+                    else if (id <= 22) octx.fillStyle = '#38bdf8'; // Hands: Cyan
+                    else if (id <= 28) octx.fillStyle = '#22c55e'; // Hips & Knees: Green
+                    else octx.fillStyle = '#f97316';               // Feet: Orange
 
                     octx.beginPath();
                     octx.arc(px, py, 3.5, 0, 2 * Math.PI);
@@ -485,7 +503,41 @@ INDEX_HTML = """
                 }
             }
 
-            // 3. Highlight Active Exercise Joint with Angle Arc
+            // 3. Draw Complete 21-Point Hand Skeletons (ALL 5 FINGERS) if detected
+            if (data.hands && data.hands.length > 0) {
+                for (const hand of data.hands) {
+                    // Draw finger bones
+                    octx.strokeStyle = '#38bdf8';
+                    octx.lineWidth = 2.5;
+                    for (const [p1, p2] of HAND_CONNECTIONS) {
+                        if (hand[p1] && hand[p2]) {
+                            octx.beginPath();
+                            octx.moveTo(mapX(hand[p1][0]), hand[p1][1]);
+                            octx.lineTo(mapX(hand[p2][0]), hand[p2][1]);
+                            octx.stroke();
+                        }
+                    }
+
+                    // Draw all 21 individual finger joints
+                    hand.forEach((pt, idx) => {
+                        const hx = mapX(pt[0]);
+                        const hy = pt[1];
+
+                        // Fingertips: 4 (thumb), 8 (index), 12 (middle), 16 (ring), 20 (pinky)
+                        const isTip = [4, 8, 12, 16, 20].includes(idx);
+                        octx.fillStyle = isTip ? '#22c55e' : '#facc15';
+                        octx.beginPath();
+                        octx.arc(hx, hy, isTip ? 4.5 : 3, 0, 2 * Math.PI);
+                        octx.fill();
+
+                        octx.strokeStyle = '#ffffff';
+                        octx.lineWidth = 1;
+                        octx.stroke();
+                    });
+                }
+            }
+
+            // 4. Highlight Active Exercise Joint with Angle Arc
             if (data.active_joint) {
                 const j = data.active_joint;
                 const jx = mapX(j[0]);
@@ -504,20 +556,21 @@ INDEX_HTML = """
                 octx.fillText(data.angle + '°', jx + 14, jy - 8);
             }
 
-            // 4. Floating Thumbs Up / Gesture Banner if detected
+            // 5. Floating Thumbs Up / Gesture Banner if detected
             if (data.movement && data.movement.is_gesture) {
                 octx.fillStyle = '#eab308';
                 octx.font = 'bold 18px sans-serif';
                 octx.fillText('👍 GESTURE ACTIVE', w / 2 - 80, 42);
             }
 
-            // 5. FPS & Locking Status
+            // 6. Top Status Bar: Local FPS Counter & Landmarks Count
             octx.fillStyle = '#22c55e';
             octx.font = 'bold 14px monospace';
-            const count = Object.keys(lms).length;
-            octx.fillText('FPS: ' + fps + ' | 33 POINTS ACTIVE (' + count + ' LOCATED)', 12, 24);
+            const numHands = (data.hands || []).length;
+            const handLabel = numHands > 0 ? ' | 5-FINGER HANDS: ' + numHands : '';
+            octx.fillText('FPS: ' + fps + ' | 33 BODY POINTS' + handLabel, 12, 24);
 
-            // 6. Progress bar
+            // 7. Rep Progress Bar along bottom
             const progress = Math.max(0, Math.min(1, (data.progress || 0) / 100));
             octx.fillStyle = '#1e293b';
             octx.fillRect(0, h - 8, w, 8);
@@ -537,7 +590,7 @@ INDEX_HTML = """
             if (!inFlight && !video.paused) {
                 await sendCvFrame();
             }
-            setTimeout(continuousCvLoop, 50);
+            setTimeout(continuousCvLoop, 45);
         }
 
         window.addEventListener('DOMContentLoaded', () => {
@@ -577,6 +630,8 @@ def process_frame():
     if frame is None:
         return jsonify({"error": "Decode failed"}), 400
 
+    h, w = frame.shape[:2]
+
     # 1. Full 33-point Pose Landmark Extraction (Exp 6)
     landmarks_dict = {}
     active_joint = None
@@ -588,10 +643,40 @@ def process_frame():
             sy = int(lm.y * target_h)
             landmarks_dict[idx] = (sx, sy, float(lm.visibility))
 
-    # 2. Comprehensive Body Movement & Gesture Analysis
+    # 2. Complete 21-point Hand & 5-Finger Tracking (Exp 5)
+    all_hands = []
+    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    h_res = hands_detector.process(rgb)
+
+    if h_res and h_res.multi_hand_landmarks:
+        for hand in h_res.multi_hand_landmarks:
+            all_hands.append([[int(lm.x * target_w), int(lm.y * target_h)] for lm in hand.landmark])
+    elif hasattr(pose_detector, "results") and pose_detector.results and pose_detector.results.pose_landmarks:
+        # High-resolution hand crop around detected wrists if full-body camera view
+        for w_idx in [15, 16]:  # Left and Right wrists
+            rw = pose_detector.results.pose_landmarks.landmark[w_idx]
+            if rw.visibility > 0.3:
+                cx, cy = int(rw.x * w), int(rw.y * h)
+                pad = int(min(h, w) * 0.22)
+                y1, y2 = max(0, cy - pad), min(h, cy + pad)
+                x1, x2 = max(0, cx - pad), min(w, cx + pad)
+                crop = frame[y1:y2, x1:x2]
+                if crop.size > 0 and (y2 - y1 > 30) and (x2 - x1 > 30):
+                    crop_up = cv2.resize(crop, (224, 224))
+                    c_res = crop_hands_detector.process(cv2.cvtColor(crop_up, cv2.COLOR_BGR2RGB))
+                    if c_res and c_res.multi_hand_landmarks:
+                        for hand in c_res.multi_hand_landmarks:
+                            pts = []
+                            for lm in hand.landmark:
+                                fx = int((x1 + lm.x * (x2 - x1)) / w * target_w)
+                                fy = int((y1 + lm.y * (y2 - y1)) / h * target_h)
+                                pts.append([fx, fy])
+                            all_hands.append(pts)
+
+    # 3. Comprehensive Body Movement & Gesture Analysis
     movement_info = analyze_full_body_movement(landmarks_dict, tracker.exercise)
 
-    # 3. Update Rep Counter ONLY when NOT in a gesture (prevents thumbs-up false reps)
+    # 4. Update Rep Counter ONLY when NOT in a gesture
     if landmarks_dict and not movement_info.get("is_gesture", False):
         status = tracker.update(landmarks_dict)
     else:
@@ -608,6 +693,7 @@ def process_frame():
 
     return jsonify({
         "landmarks": landmarks_dict,
+        "hands": all_hands,
         "active_joint": active_joint,
         "active_side": tracker.active_side,
         "movement": movement_info,
