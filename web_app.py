@@ -13,12 +13,15 @@ from pose_detector import PoseDetector
 app = Flask(__name__)
 CORS(app)
 
-# Use complexity=0 (BlazePose Lite) for ultra-fast real-time inference (6-10ms)
+# BlazePose Lite (complexity=0) for low latency
 pose_detector = PoseDetector(complexity=0, detection_con=0.5, track_con=0.5)
-gesture_ctrl = GestureController(min_detection_confidence=0.6)
+gesture_ctrl = GestureController(min_detection_confidence=0.7)
 tracker = ExerciseTracker(exercise="curl")
 hud = HUDRenderer()
+
 paused = False
+gestures_enabled = False  # Disabled by default to prevent accidental pauses during curls
+last_gesture_time = 0
 frame_counter = 0
 
 INDEX_HTML = """
@@ -47,11 +50,12 @@ INDEX_HTML = """
         .stat-value.green { color: #4ade80; }
         .stat-value.yellow { color: #facc15; }
         .feedback-banner { width: 100%; max-width: 640px; background: #1e1b4b; border: 1px solid #4338ca; border-radius: 12px; padding: 10px 14px; margin-top: 10px; font-size: 0.95rem; font-weight: 700; color: #a5b4fc; text-align: center; display: flex; align-items: center; justify-content: center; gap: 8px; }
-        .controls { display: flex; gap: 8px; width: 100%; max-width: 640px; margin-top: 10px; }
-        .btn { flex: 1; padding: 12px 6px; border-radius: 10px; border: none; font-weight: 700; font-size: 0.85rem; cursor: pointer; transition: 0.15s; }
+        .controls { display: flex; flex-wrap: wrap; gap: 8px; width: 100%; max-width: 640px; margin-top: 10px; }
+        .btn { flex: 1; min-width: 120px; padding: 12px 8px; border-radius: 10px; border: none; font-weight: 700; font-size: 0.85rem; cursor: pointer; transition: 0.15s; }
         .btn-blue { background: #2563eb; color: #fff; }
         .btn-dark { background: #1f2937; color: #f3f4f6; border: 1px solid #374151; }
         .btn-red { background: #dc2626; color: #fff; }
+        .btn-amber { background: #d97706; color: #fff; }
         .btn:active { transform: scale(0.97); }
         .gesture-guide { width: 100%; max-width: 640px; background: rgba(17, 24, 39, 0.7); border-radius: 12px; padding: 8px 12px; margin-top: 10px; font-size: 0.75rem; color: #9ca3af; border: 1px dashed #374151; text-align: center; }
         .gesture-guide b { color: #e5e7eb; }
@@ -59,14 +63,14 @@ INDEX_HTML = """
 </head>
 <body>
     <header>
-        <h1>FitVision AI <span class="badge">GPU Accelerated</span></h1>
+        <h1>FitVision AI <span class="badge">Live</span></h1>
     </header>
 
     <div class="viewport">
         <video id="webcam" playsinline autoplay muted></video>
         <canvas id="overlay"></canvas>
         <div class="overlay-loader" id="loader">
-            <button class="btn-start" onclick="startCamera()">📷 Launch AI Camera</button>
+            <button class="btn-start" onclick="startCamera()">📷 Launch Camera</button>
             <p style="color: #9ca3af; font-size: 0.85rem;">Hardware-accelerated pose & form corrector</p>
         </div>
     </div>
@@ -89,7 +93,7 @@ INDEX_HTML = """
             <div class="stat-value yellow" id="stat-stage">READY</div>
         </div>
         <div class="stat-card">
-            <div class="stat-label">Joint Angle</div>
+            <div class="stat-label">Angle</div>
             <div class="stat-value" id="stat-angle">0°</div>
         </div>
     </div>
@@ -98,9 +102,11 @@ INDEX_HTML = """
         <button class="btn btn-blue" onclick="switchExercise()">🔄 Switch Exercise</button>
         <button class="btn btn-dark" onclick="togglePause()" id="btn-pause">⏸ Pause</button>
         <button class="btn btn-red" onclick="resetReps()">↺ Reset</button>
+        <button class="btn btn-amber" onclick="toggleGestures()" id="btn-gestures">🖐 Gestures: Off</button>
+        <button class="btn btn-dark" onclick="flipCamera()">📷 Flip Camera</button>
     </div>
 
-    <div class="gesture-guide">
+    <div class="gesture-guide" id="gesture-guide" style="display: none;">
         👋 <b>Gestures:</b> ✋ Open Palm = Pause | 👍 Thumbs Up = Switch | ✊ Fist = Reset
     </div>
 
@@ -111,12 +117,13 @@ INDEX_HTML = """
         const octx = overlay.getContext('2d');
 
         const sendCanvas = document.createElement('canvas');
-        sendCanvas.width = 360;
-        sendCanvas.height = 270;
+        sendCanvas.width = 320;
+        sendCanvas.height = 240;
         const sctx = sendCanvas.getContext('2d');
 
         let active = false;
         let inFlight = false;
+        let currentFacingMode = 'user';
         let lastFpsTime = performance.now();
         let frameCount = 0;
         let fps = 0;
@@ -134,25 +141,38 @@ INDEX_HTML = """
         async function startCamera() {
             try {
                 const stream = await navigator.mediaDevices.getUserMedia({
-                    video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } },
+                    video: { facingMode: currentFacingMode, width: { ideal: 640 }, height: { ideal: 480 } },
                     audio: false
                 });
                 video.srcObject = stream;
                 await video.play();
+
+                video.addEventListener('loadedmetadata', () => {
+                    overlay.width = video.videoWidth || 640;
+                    overlay.height = video.videoHeight || 480;
+                });
                 overlay.width = video.videoWidth || 640;
                 overlay.height = video.videoHeight || 480;
+
                 active = true;
                 loader.style.display = 'none';
                 requestAnimationFrame(loop);
             } catch (err) {
-                alert('Camera permission required: ' + err.message);
+                alert('Camera access error: ' + err.message);
+            }
+        }
+
+        async function flipCamera() {
+            currentFacingMode = currentFacingMode === 'user' ? 'environment' : 'user';
+            if (active && video.srcObject) {
+                video.srcObject.getTracks().forEach(t => t.stop());
+                startCamera();
             }
         }
 
         async function loop() {
             if (!active) return;
 
-            // Compute local rendering FPS
             frameCount++;
             const now = performance.now();
             if (now - lastFpsTime >= 1000) {
@@ -163,13 +183,8 @@ INDEX_HTML = """
 
             if (!inFlight && video.readyState >= 2) {
                 inFlight = true;
-                // Capture mirrored frame for inference
-                sctx.save();
-                sctx.scale(-1, 1);
-                sctx.drawImage(video, -sendCanvas.width, 0, sendCanvas.width, sendCanvas.height);
-                sctx.restore();
-
-                const base64Data = sendCanvas.toDataURL('image/jpeg', 0.55).split(',')[1];
+                sctx.drawImage(video, 0, 0, sendCanvas.width, sendCanvas.height);
+                const base64Data = sendCanvas.toDataURL('image/jpeg', 0.5).split(',')[1];
 
                 fetch('/process_fast', {
                     method: 'POST',
@@ -200,54 +215,65 @@ INDEX_HTML = """
             const w = overlay.width;
             const h = overlay.height;
 
-            // Draw skeleton (mirrored to match video)
-            octx.strokeStyle = '#06b6d4';
-            octx.lineWidth = 3;
+            // Mirror coordinates to align with CSS scaleX(-1) on video
+            function mapX(x) {
+                return currentFacingMode === 'user' ? (w - x) : x;
+            }
+
+            // Draw skeleton lines
+            octx.strokeStyle = '#38bdf8';
+            octx.lineWidth = 4;
 
             for (const [p1, p2] of POSE_CONNECTIONS) {
                 if (lms[p1] && lms[p2]) {
-                    octx.beginPath();
-                    octx.moveTo(w - lms[p1][0], lms[p1][1]);
-                    octx.lineTo(w - lms[p2][0], lms[p2][1]);
-                    octx.stroke();
+                    const vis1 = lms[p1][2] !== undefined ? lms[p1][2] : 1.0;
+                    const vis2 = lms[p2][2] !== undefined ? lms[p2][2] : 1.0;
+                    if (vis1 > 0.3 && vis2 > 0.3) {
+                        octx.beginPath();
+                        octx.moveTo(mapX(lms[p1][0]), lms[p1][1]);
+                        octx.lineTo(mapX(lms[p2][0]), lms[p2][1]);
+                        octx.stroke();
+                    }
                 }
             }
 
-            // Draw joints
+            // Draw joint circles
             for (const id in lms) {
                 const pt = lms[id];
-                octx.fillStyle = '#f43f5e';
-                octx.beginPath();
-                octx.arc(w - pt[0], pt[1], 5, 0, 2 * Math.PI);
-                octx.fill();
+                const vis = pt[2] !== undefined ? pt[2] : 1.0;
+                if (vis > 0.3) {
+                    octx.fillStyle = '#f43f5e';
+                    octx.beginPath();
+                    octx.arc(mapX(pt[0]), pt[1], 6, 0, 2 * Math.PI);
+                    octx.fill();
+                }
             }
 
-            // Draw Active Joint Indicator & Angle Arc
+            // Highlight Active Joint & Display Angle
             if (data.active_joint) {
                 const j = data.active_joint;
-                const jx = w - j[0];
+                const jx = mapX(j[0]);
                 const jy = j[1];
 
                 octx.fillStyle = '#22c55e';
                 octx.beginPath();
-                octx.arc(jx, jy, 10, 0, 2 * Math.PI);
+                octx.arc(jx, jy, 12, 0, 2 * Math.PI);
                 octx.fill();
 
-                octx.font = 'bold 16px sans-serif';
+                octx.font = 'bold 18px sans-serif';
                 octx.fillStyle = '#ffffff';
-                octx.fillText(data.angle + '°', jx + 12, jy - 10);
+                octx.fillText(data.angle + '°', jx + 14, jy - 10);
             }
 
-            // Local FPS Counter (Exp 1 requirement)
+            // Top Status Bar
             octx.fillStyle = '#22c55e';
             octx.font = 'bold 14px monospace';
-            octx.fillText('FPS: ' + fps + ' (GPU Lite)', 12, 24);
+            octx.fillText('FPS: ' + fps + ' | SIDE: ' + (data.active_side || 'auto').toUpperCase(), 12, 24);
 
-            // Gesture Badge
-            if (data.gesture && data.gesture !== 'NONE') {
-                octx.fillStyle = '#eab308';
-                octx.font = 'bold 18px sans-serif';
-                octx.fillText('👋 Gesture: ' + data.gesture, 12, 50);
+            if (data.paused) {
+                octx.fillStyle = '#f97316';
+                octx.font = 'bold 20px sans-serif';
+                octx.fillText('⏸ PAUSED', w / 2 - 50, 40);
             }
 
             // Rep Progress Bar along bottom
@@ -274,6 +300,13 @@ INDEX_HTML = """
             await fetch('/reset', { method: 'POST' });
             document.getElementById('stat-reps').innerText = '0';
         }
+
+        async function toggleGestures() {
+            const res = await fetch('/toggle_gestures', { method: 'POST' });
+            const data = await res.json();
+            document.getElementById('btn-gestures').innerText = data.enabled ? '🖐 Gestures: On' : '🖐 Gestures: Off';
+            document.getElementById('gesture-guide').style.display = data.enabled ? 'block' : 'none';
+        }
     </script>
 </body>
 </html>
@@ -287,7 +320,7 @@ def index():
 
 @app.route("/process_fast", methods=["POST"])
 def process_fast():
-    global paused, frame_counter
+    global paused, frame_counter, last_gesture_time, gestures_enabled
     frame_counter += 1
 
     data = request.get_json(force=True)
@@ -304,49 +337,53 @@ def process_fast():
     if frame is None:
         return jsonify({"error": "Decode failed"}), 400
 
-    h, w = frame.shape[:2]
-
-    # Run Hands gesture every 3 frames to keep latency under 15ms
+    # 1. Gestures (only when explicitly enabled)
     gesture = "NONE"
-    if frame_counter % 3 == 0:
+    now_t = time.time()
+    if gestures_enabled and frame_counter % 3 == 0 and (now_t - last_gesture_time > 1.5):
         gesture_ctrl.find_hands(frame, draw=False)
-        gesture = gesture_ctrl.get_gesture()
-        if gesture == GestureController.PAUSE:
-            paused = not paused
-        elif gesture == GestureController.SWITCH:
-            next_ex = "squat" if tracker.exercise == "curl" else "curl"
-            tracker.set_exercise(next_ex)
-        elif gesture == GestureController.RESET:
-            tracker.reps = 0
+        g = gesture_ctrl.get_gesture()
+        if g != GestureController.NONE:
+            gesture = g
+            last_gesture_time = now_t
+            if g == GestureController.PAUSE:
+                paused = not paused
+            elif g == GestureController.SWITCH:
+                next_ex = "squat" if tracker.exercise == "curl" else "curl"
+                tracker.set_exercise(next_ex)
+            elif g == GestureController.RESET:
+                tracker.reps = 0
 
+    # 2. ALWAYS detect pose landmarks (even if paused so skeleton renders!)
     landmarks_dict = {}
     active_joint = None
 
-    if not paused:
-        pose_detector.find_pose(frame, draw=False)
-        if hasattr(pose_detector, "results") and pose_detector.results.pose_landmarks:
-            for idx, lm in enumerate(pose_detector.results.pose_landmarks.landmark):
-                # Scale coordinates to target display size
-                sx = int(lm.x * target_w)
-                sy = int(lm.y * target_h)
-                landmarks_dict[idx] = (sx, sy, float(lm.visibility))
+    pose_detector.find_pose(frame, draw=False)
+    if hasattr(pose_detector, "results") and pose_detector.results.pose_landmarks:
+        for idx, lm in enumerate(pose_detector.results.pose_landmarks.landmark):
+            sx = int(lm.x * target_w)
+            sy = int(lm.y * target_h)
+            landmarks_dict[idx] = (sx, sy, float(lm.visibility))
 
+    # 3. Update rep counter / form tracking if not paused
+    if not paused and landmarks_dict:
         status = tracker.update(landmarks_dict)
-
-        # Determine active joint position for visual angle arc
-        if tracker.exercise == "curl":
-            active_id = 13 if tracker.active_side == "left" else 14
-        else:
-            active_id = 25 if tracker.active_side == "left" else 26
-
-        if active_id in landmarks_dict:
-            active_joint = [landmarks_dict[active_id][0], landmarks_dict[active_id][1]]
     else:
         status = tracker._status()
+
+    # Active joint location for overlay arc
+    if tracker.exercise == "curl":
+        active_id = 13 if tracker.active_side == "left" else 14
+    else:
+        active_id = 25 if tracker.active_side == "left" else 26
+
+    if active_id in landmarks_dict:
+        active_joint = [landmarks_dict[active_id][0], landmarks_dict[active_id][1]]
 
     return jsonify({
         "landmarks": landmarks_dict,
         "active_joint": active_joint,
+        "active_side": tracker.active_side,
         "reps": status["reps"],
         "exercise": status["exercise"],
         "stage": status["stage"],
@@ -370,6 +407,13 @@ def toggle_pause():
     global paused
     paused = not paused
     return jsonify({"paused": paused})
+
+
+@app.route("/toggle_gestures", methods=["POST"])
+def toggle_gestures():
+    global gestures_enabled
+    gestures_enabled = not gestures_enabled
+    return jsonify({"enabled": gestures_enabled})
 
 
 @app.route("/reset", methods=["POST"])
