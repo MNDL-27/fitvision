@@ -36,6 +36,7 @@ class NimPoseEngine:
         self.last_score = 85
         self.last_cue = "Stand in frame to begin"
         self.last_breakdown = "Searching for posture..."
+        self.last_flaws = []
         self.person_detected = False
 
     def set_exercise(self, exercise: str):
@@ -130,6 +131,7 @@ class NimPoseEngine:
         score = self.last_score
         cue = self.last_cue
         breakdown = self.last_breakdown
+        flaws = list(self.last_flaws)
         person_detected = False
 
         # 1. Look for JSON block
@@ -197,4 +199,5 @@ class NimPoseEngine:
             "cue": self.last_cue,
             "breakdown": self.last_breakdown,
             "person_detected": self.person_detected,
+            "flaws": flaws,
         }

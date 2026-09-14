@@ -1,6 +1,8 @@
+import time
 import unittest
-from pose_detector import PoseDetector
 from exercise_tracker import ExerciseTracker
+from pose_detector import PoseDetector
+
 
 class TestPoseEngine(unittest.TestCase):
     def test_calculate_angle_90_degrees(self):
@@ -25,46 +27,55 @@ class TestPoseEngine(unittest.TestCase):
         self.assertAlmostEqual(angle, 45.0, places=1)
 
     def test_bicep_curl_counter(self):
-        tracker = ExerciseTracker(exercise='curl')
+        tracker = ExerciseTracker(exercise="curl")
         self.assertEqual(tracker.reps, 0)
 
-        # 1. Down position (arm extended)
+        # 1. Down position (extended arm)
         lms_down = {11: (100, 100, 0.9), 13: (100, 200, 0.9), 15: (100, 300, 0.9)}
-        for _ in range(3):
+        for _ in range(8):
+            time.sleep(0.005)
             tracker.update(lms_down)
-        self.assertEqual(tracker.stage, 'DOWN')
+        self.assertEqual(tracker.stage, "DOWN")
 
-        # 2. Up position (curled)
+        # 2. Curl up to peak contraction
         lms_up = {11: (100, 100, 0.9), 13: (100, 200, 0.9), 15: (100, 110, 0.9)}
-        for _ in range(3):
+        for _ in range(12):
+            time.sleep(0.005)
             tracker.update(lms_up)
-        self.assertEqual(tracker.stage, 'UP')
+        self.assertEqual(tracker.stage, "UP")
 
-        # 3. Complete rep by returning down
-        for _ in range(3):
+        # 3. Lower all the way down to complete 1 rep
+        for _ in range(12):
+            time.sleep(0.005)
             tracker.update(lms_down)
         self.assertEqual(tracker.reps, 1)
+        self.assertEqual(tracker.stage, "DOWN")
 
     def test_squat_counter(self):
-        tracker = ExerciseTracker(exercise='squat')
+        tracker = ExerciseTracker(exercise="squat")
         self.assertEqual(tracker.reps, 0)
 
-        # Standing upright
+        # 1. Standing upright (extended legs)
         lms_stand = {23: (100, 100, 0.9), 25: (100, 200, 0.9), 27: (100, 300, 0.9)}
-        for _ in range(3):
+        for _ in range(8):
+            time.sleep(0.005)
             tracker.update(lms_stand)
-        self.assertEqual(tracker.stage, 'UP')
+        self.assertEqual(tracker.stage, "UP")
 
-        # Deep squat (~90 deg)
+        # 2. Deep squat (< 95 deg)
         lms_squat = {23: (100, 200, 0.9), 25: (100, 300, 0.9), 27: (200, 300, 0.9)}
-        for _ in range(3):
+        for _ in range(12):
+            time.sleep(0.005)
             tracker.update(lms_squat)
-        self.assertEqual(tracker.stage, 'DOWN')
+        self.assertEqual(tracker.stage, "DOWN")
 
-        # Stand back up
-        for _ in range(3):
+        # 3. Stand back upright to complete 1 rep
+        for _ in range(12):
+            time.sleep(0.005)
             tracker.update(lms_stand)
         self.assertEqual(tracker.reps, 1)
+        self.assertEqual(tracker.stage, "UP")
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     unittest.main()
