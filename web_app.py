@@ -1,4 +1,5 @@
 import base64
+import os
 import time
 import cv2
 import numpy as np
@@ -8,19 +9,20 @@ from flask_cors import CORS
 from exercise_tracker import ExerciseTracker
 from gesture_controller import GestureController
 from hud_renderer import HUDRenderer
+from nvidia_nim import NvidiaNimCoach
 from pose_detector import PoseDetector
 
 app = Flask(__name__)
 CORS(app)
 
-# BlazePose Lite (complexity=0) for low latency
-pose_detector = PoseDetector(complexity=0, detection_con=0.5, track_con=0.5)
+pose_detector = PoseDetector(complexity=0, detection_con=0.35, track_con=0.35)
 gesture_ctrl = GestureController(min_detection_confidence=0.7)
 tracker = ExerciseTracker(exercise="curl")
 hud = HUDRenderer()
+nim_coach = NvidiaNimCoach(api_key=os.environ.get("NVIDIA_API_KEY", ""))
 
 paused = False
-gestures_enabled = False  # Disabled by default to prevent accidental pauses during curls
+gestures_enabled = False
 last_gesture_time = 0
 frame_counter = 0
 
@@ -33,14 +35,15 @@ INDEX_HTML = """
     <title>FitVision — AI Fitness Trainer</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
-        body { background: #0b0f19; color: #f8fafc; min-height: 100vh; display: flex; flex-direction: column; align-items: center; padding: 12px; }
+        body { background: #090d16; color: #f8fafc; min-height: 100vh; display: flex; flex-direction: column; align-items: center; padding: 12px; }
         header { text-align: center; margin-bottom: 8px; width: 100%; max-width: 640px; }
         h1 { font-size: 1.4rem; font-weight: 800; color: #38bdf8; display: flex; align-items: center; justify-content: center; gap: 8px; }
         .badge { background: #0284c7; font-size: 0.7rem; padding: 2px 8px; border-radius: 9999px; text-transform: uppercase; color: #fff; }
+        .badge.nim { background: #16a34a; font-weight: 800; }
         .viewport { position: relative; width: 100%; max-width: 640px; aspect-ratio: 4/3; background: #000; border-radius: 16px; overflow: hidden; box-shadow: 0 10px 30px -5px rgba(0,0,0,0.7); border: 2px solid #1e293b; }
         #webcam { width: 100%; height: 100%; object-fit: cover; display: block; transform: scaleX(-1); }
         #overlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
-        .overlay-loader { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; background: rgba(11, 15, 25, 0.95); z-index: 10; gap: 12px; }
+        .overlay-loader { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; background: rgba(9, 13, 22, 0.95); z-index: 10; gap: 12px; }
         .btn-start { background: #22c55e; color: #000; border: none; padding: 14px 32px; border-radius: 14px; font-size: 1.15rem; font-weight: 800; cursor: pointer; transition: 0.2s; box-shadow: 0 4px 15px rgba(34,197,94,0.5); }
         .btn-start:active { transform: scale(0.96); }
         .stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; width: 100%; max-width: 640px; margin-top: 10px; }
@@ -55,15 +58,24 @@ INDEX_HTML = """
         .btn-blue { background: #2563eb; color: #fff; }
         .btn-dark { background: #1f2937; color: #f3f4f6; border: 1px solid #374151; }
         .btn-red { background: #dc2626; color: #fff; }
-        .btn-amber { background: #d97706; color: #fff; }
+        .btn-green { background: #15803d; color: #fff; }
         .btn:active { transform: scale(0.97); }
-        .gesture-guide { width: 100%; max-width: 640px; background: rgba(17, 24, 39, 0.7); border-radius: 12px; padding: 8px 12px; margin-top: 10px; font-size: 0.75rem; color: #9ca3af; border: 1px dashed #374151; text-align: center; }
+
+        /* NVIDIA NIM Panel */
+        .nim-panel { width: 100%; max-width: 640px; background: #0f172a; border: 1px solid #334155; border-radius: 12px; padding: 12px; margin-top: 10px; }
+        .nim-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+        .nim-title { font-size: 0.85rem; font-weight: 800; color: #22c55e; display: flex; align-items: center; gap: 6px; }
+        .nim-row { display: flex; gap: 6px; margin-top: 6px; }
+        .nim-input { flex: 1; background: #1e293b; border: 1px solid #475569; border-radius: 8px; padding: 6px 10px; color: #fff; font-size: 0.8rem; }
+        .nim-btn { background: #22c55e; color: #000; border: none; border-radius: 8px; padding: 6px 14px; font-weight: 700; font-size: 0.8rem; cursor: pointer; }
+        .nim-result { margin-top: 8px; background: #1e293b; padding: 8px 10px; border-radius: 8px; font-size: 0.8rem; color: #cbd5e1; display: none; }
+        .gesture-guide { width: 100%; max-width: 640px; background: rgba(17, 24, 39, 0.7); border-radius: 12px; padding: 8px 12px; margin-top: 8px; font-size: 0.75rem; color: #9ca3af; border: 1px dashed #374151; text-align: center; }
         .gesture-guide b { color: #e5e7eb; }
     </style>
 </head>
 <body>
     <header>
-        <h1>FitVision AI <span class="badge">Live</span></h1>
+        <h1>FitVision AI <span class="badge">BlazePose</span> <span class="badge nim">NVIDIA NIM</span></h1>
     </header>
 
     <div class="viewport">
@@ -71,12 +83,12 @@ INDEX_HTML = """
         <canvas id="overlay"></canvas>
         <div class="overlay-loader" id="loader">
             <button class="btn-start" onclick="startCamera()">📷 Launch Camera</button>
-            <p style="color: #9ca3af; font-size: 0.85rem;">Hardware-accelerated pose & form corrector</p>
+            <p style="color: #9ca3af; font-size: 0.85rem;">Step back so arms & upper body are visible</p>
         </div>
     </div>
 
     <div class="feedback-banner" id="banner">
-        💬 <span id="stat-feedback">Stand in frame to begin</span>
+        💬 <span id="stat-feedback">Stand in front of camera to begin</span>
     </div>
 
     <div class="stats-grid">
@@ -102,12 +114,25 @@ INDEX_HTML = """
         <button class="btn btn-blue" onclick="switchExercise()">🔄 Switch Exercise</button>
         <button class="btn btn-dark" onclick="togglePause()" id="btn-pause">⏸ Pause</button>
         <button class="btn btn-red" onclick="resetReps()">↺ Reset</button>
-        <button class="btn btn-amber" onclick="toggleGestures()" id="btn-gestures">🖐 Gestures: Off</button>
         <button class="btn btn-dark" onclick="flipCamera()">📷 Flip Camera</button>
+        <button class="btn btn-green" onclick="runNimAudit()">🧠 NVIDIA NIM Audit</button>
     </div>
 
-    <div class="gesture-guide" id="gesture-guide" style="display: none;">
-        👋 <b>Gestures:</b> ✋ Open Palm = Pause | 👍 Thumbs Up = Switch | ✊ Fist = Reset
+    <!-- NVIDIA NIM Settings Card -->
+    <div class="nim-panel">
+        <div class="nim-header">
+            <div class="nim-title">⚡ NVIDIA NIM Biomechanics Engine</div>
+            <span style="font-size: 0.75rem; color: #94a3b8;" id="nim-status">Status: Standby</span>
+        </div>
+        <div class="nim-row">
+            <input type="password" id="nim-key" class="nim-input" placeholder="Enter NVIDIA API key (nvapi-...) for deep LLM vision coaching" />
+            <button class="nim-btn" onclick="saveNimKey()">Save Key</button>
+        </div>
+        <div class="nim-result" id="nim-result"></div>
+    </div>
+
+    <div class="gesture-guide">
+        👋 <b>Controls:</b> Stand 1.5 - 2 meters back so upper body/legs are in view. Click <b>NVIDIA NIM Audit</b> anytime for full AI form critique.
     </div>
 
     <script>
@@ -117,8 +142,8 @@ INDEX_HTML = """
         const octx = overlay.getContext('2d');
 
         const sendCanvas = document.createElement('canvas');
-        sendCanvas.width = 320;
-        sendCanvas.height = 240;
+        sendCanvas.width = 480;
+        sendCanvas.height = 360;
         const sctx = sendCanvas.getContext('2d');
 
         let active = false;
@@ -147,12 +172,12 @@ INDEX_HTML = """
                 video.srcObject = stream;
                 await video.play();
 
-                video.addEventListener('loadedmetadata', () => {
+                const updateSize = () => {
                     overlay.width = video.videoWidth || 640;
                     overlay.height = video.videoHeight || 480;
-                });
-                overlay.width = video.videoWidth || 640;
-                overlay.height = video.videoHeight || 480;
+                };
+                video.addEventListener('loadedmetadata', updateSize);
+                updateSize();
 
                 active = true;
                 loader.style.display = 'none';
@@ -184,7 +209,7 @@ INDEX_HTML = """
             if (!inFlight && video.readyState >= 2) {
                 inFlight = true;
                 sctx.drawImage(video, 0, 0, sendCanvas.width, sendCanvas.height);
-                const base64Data = sendCanvas.toDataURL('image/jpeg', 0.5).split(',')[1];
+                const base64Data = sendCanvas.toDataURL('image/jpeg', 0.6).split(',')[1];
 
                 fetch('/process_fast', {
                     method: 'POST',
@@ -215,7 +240,6 @@ INDEX_HTML = """
             const w = overlay.width;
             const h = overlay.height;
 
-            // Mirror coordinates to align with CSS scaleX(-1) on video
             function mapX(x) {
                 return currentFacingMode === 'user' ? (w - x) : x;
             }
@@ -228,7 +252,7 @@ INDEX_HTML = """
                 if (lms[p1] && lms[p2]) {
                     const vis1 = lms[p1][2] !== undefined ? lms[p1][2] : 1.0;
                     const vis2 = lms[p2][2] !== undefined ? lms[p2][2] : 1.0;
-                    if (vis1 > 0.3 && vis2 > 0.3) {
+                    if (vis1 > 0.25 && vis2 > 0.25) {
                         octx.beginPath();
                         octx.moveTo(mapX(lms[p1][0]), lms[p1][1]);
                         octx.lineTo(mapX(lms[p2][0]), lms[p2][1]);
@@ -241,7 +265,7 @@ INDEX_HTML = """
             for (const id in lms) {
                 const pt = lms[id];
                 const vis = pt[2] !== undefined ? pt[2] : 1.0;
-                if (vis > 0.3) {
+                if (vis > 0.25) {
                     octx.fillStyle = '#f43f5e';
                     octx.beginPath();
                     octx.arc(mapX(pt[0]), pt[1], 6, 0, 2 * Math.PI);
@@ -268,7 +292,8 @@ INDEX_HTML = """
             // Top Status Bar
             octx.fillStyle = '#22c55e';
             octx.font = 'bold 14px monospace';
-            octx.fillText('FPS: ' + fps + ' | SIDE: ' + (data.active_side || 'auto').toUpperCase(), 12, 24);
+            const statusText = Object.keys(lms).length > 0 ? 'BODY DETECTED' : 'SEARCHING BODY...';
+            octx.fillText('FPS: ' + fps + ' | ' + statusText, 12, 24);
 
             if (data.paused) {
                 octx.fillStyle = '#f97316';
@@ -301,11 +326,46 @@ INDEX_HTML = """
             document.getElementById('stat-reps').innerText = '0';
         }
 
-        async function toggleGestures() {
-            const res = await fetch('/toggle_gestures', { method: 'POST' });
+        async function saveNimKey() {
+            const key = document.getElementById('nim-key').value;
+            if (!key) return alert('Enter key first');
+            const res = await fetch('/set_nim_key', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ key: key })
+            });
             const data = await res.json();
-            document.getElementById('btn-gestures').innerText = data.enabled ? '🖐 Gestures: On' : '🖐 Gestures: Off';
-            document.getElementById('gesture-guide').style.display = data.enabled ? 'block' : 'none';
+            document.getElementById('nim-status').innerText = 'Status: ' + (data.configured ? 'Configured ✅' : 'Invalid ❌');
+        }
+
+        async function runNimAudit() {
+            if (!active) return alert('Start camera first!');
+            const nimResult = document.getElementById('nim-result');
+            nimResult.style.display = 'block';
+            nimResult.innerHTML = '⏳ <i>Sending frame to NVIDIA NIM (Llama 3.2 Vision)...</i>';
+
+            sctx.drawImage(video, 0, 0, sendCanvas.width, sendCanvas.height);
+            const base64Data = sendCanvas.toDataURL('image/jpeg', 0.8).split(',')[1];
+
+            try {
+                const res = await fetch('/nim_analyze', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ image: base64Data })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    nimResult.innerHTML = `
+                        <b>Rating:</b> <span style="color:#4ade80">${data.form}</span> (Score: ${data.score}/100)<br>
+                        <b>Coach Cue:</b> <i>"${data.cue}"</i><br>
+                        ${data.issues && data.issues.length ? '<b>Issues:</b> ' + data.issues.join(', ') : '<b>Issues:</b> None detected'}
+                    `;
+                } else {
+                    nimResult.innerHTML = `<span style="color:#f87171">NIM: ${data.error || 'Check API Key'}</span>`;
+                }
+            } catch (e) {
+                nimResult.innerHTML = `<span style="color:#f87171">Request error: ${e.message}</span>`;
+            }
         }
     </script>
 </body>
@@ -354,18 +414,18 @@ def process_fast():
             elif g == GestureController.RESET:
                 tracker.reps = 0
 
-    # 2. ALWAYS detect pose landmarks (even if paused so skeleton renders!)
+    # 2. Detect Pose Landmarks
     landmarks_dict = {}
     active_joint = None
 
     pose_detector.find_pose(frame, draw=False)
-    if hasattr(pose_detector, "results") and pose_detector.results.pose_landmarks:
+    if hasattr(pose_detector, "results") and pose_detector.results and pose_detector.results.pose_landmarks:
         for idx, lm in enumerate(pose_detector.results.pose_landmarks.landmark):
             sx = int(lm.x * target_w)
             sy = int(lm.y * target_h)
             landmarks_dict[idx] = (sx, sy, float(lm.visibility))
 
-    # 3. Update rep counter / form tracking if not paused
+    # 3. Update Exercise Tracker
     if not paused and landmarks_dict:
         status = tracker.update(landmarks_dict)
     else:
@@ -395,6 +455,25 @@ def process_fast():
     })
 
 
+@app.route("/nim_analyze", methods=["POST"])
+def nim_analyze():
+    data = request.get_json(force=True)
+    img_b64 = data.get("image", "")
+    if not img_b64:
+        return jsonify({"success": False, "error": "No image provided"}), 400
+
+    result = nim_coach.analyze_frame(img_b64, exercise=tracker.exercise)
+    return jsonify(result)
+
+
+@app.route("/set_nim_key", methods=["POST"])
+def set_nim_key():
+    data = request.get_json(force=True)
+    key = data.get("key", "").strip()
+    nim_coach.set_key(key)
+    return jsonify({"configured": nim_coach.is_configured()})
+
+
 @app.route("/switch_exercise", methods=["POST"])
 def switch_exercise():
     next_ex = "squat" if tracker.exercise == "curl" else "curl"
@@ -407,13 +486,6 @@ def toggle_pause():
     global paused
     paused = not paused
     return jsonify({"paused": paused})
-
-
-@app.route("/toggle_gestures", methods=["POST"])
-def toggle_gestures():
-    global gestures_enabled
-    gestures_enabled = not gestures_enabled
-    return jsonify({"enabled": gestures_enabled})
 
 
 @app.route("/reset", methods=["POST"])

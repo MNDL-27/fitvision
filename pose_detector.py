@@ -6,7 +6,7 @@ import numpy as np
 class PoseDetector:
     def __init__(self, mode=False, complexity=0, smooth_landmarks=True,
                  enable_segmentation=False, smooth_segmentation=True,
-                 detection_con=0.5, track_con=0.5):
+                 detection_con=0.35, track_con=0.35):
         self.mode = mode
         self.complexity = complexity
         self.smooth_landmarks = smooth_landmarks
@@ -28,9 +28,12 @@ class PoseDetector:
         )
 
     def find_pose(self, img, draw=True):
+        if img is None or img.size == 0:
+            return img
+
         img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         self.results = self.pose.process(img_rgb)
-        if self.results.pose_landmarks and draw:
+        if self.results and self.results.pose_landmarks and draw:
             self.mp_draw.draw_landmarks(
                 img, self.results.pose_landmarks, self.mp_pose.POSE_CONNECTIONS,
                 self.mp_draw.DrawingSpec(color=(245, 117, 66), thickness=2, circle_radius=2),
@@ -40,12 +43,12 @@ class PoseDetector:
 
     def find_landmarks(self, img, draw=True):
         lm_list = []
-        if hasattr(self, "results") and self.results.pose_landmarks:
-            h, w, _ = img.shape
+        if hasattr(self, "results") and self.results and self.results.pose_landmarks:
+            h, w = img.shape[:2]
             for idx, lm in enumerate(self.results.pose_landmarks.landmark):
                 cx, cy = int(lm.x * w), int(lm.y * h)
-                lm_list.append([idx, cx, cy, lm.z, lm.visibility])
-                if draw and lm.visibility > 0.4:
+                lm_list.append([idx, cx, cy, lm.z, float(lm.visibility)])
+                if draw and lm.visibility > 0.3:
                     cv2.circle(img, (cx, cy), 4, (0, 255, 0), cv2.FILLED)
         return lm_list
 
@@ -62,13 +65,3 @@ class PoseDetector:
         cos_angle = np.clip(cos_angle, -1.0, 1.0)
         angle = np.degrees(np.arccos(cos_angle))
         return float(angle)
-
-    def draw_angle(self, img, p1, p2, p3, angle):
-        """Draw visual angle text and connection lines on the active joint."""
-        x2, y2 = int(p2[0]), int(p2[1])
-        cv2.circle(img, (x2, y2), 8, (0, 0, 255), cv2.FILLED)
-        cv2.circle(img, (x2, y2), 12, (255, 255, 255), 2)
-        cv2.putText(
-            img, f"{int(angle)} deg", (x2 - 40, y2 - 20),
-            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA
-        )
