@@ -6,7 +6,7 @@ from flask import Flask, jsonify, render_template_string, request, send_from_dir
 from flask_cors import CORS
 
 from exercise_tracker import ExerciseTracker
-from hand_orientation import detect_hand_orientation
+from movement_analyzer import analyze_full_body_movement
 from nvidia_nim import NvidiaNimCoach
 from pose_detector import PoseDetector
 
@@ -14,8 +14,8 @@ STATIC_DIR = Path(__file__).parent / "static"
 app = Flask(__name__, static_folder=str(STATIC_DIR))
 CORS(app)
 
-# Use BlazePose Full (complexity=1) for high-accuracy body tracking
-pose_detector = PoseDetector(complexity=1, detection_con=0.4, track_con=0.4)
+# BlazePose Full (complexity=1) for complete 33-point body tracking
+pose_detector = PoseDetector(complexity=1, detection_con=0.35, track_con=0.35)
 tracker = ExerciseTracker(exercise="curl")
 nim_coach = NvidiaNimCoach()
 
@@ -32,17 +32,16 @@ INDEX_HTML = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>FitVision — AI Fitness Trainer & Biomechanics</title>
+    <title>FitVision — Full-Body AI Movement & Pose Analysis</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; -webkit-tap-highlight-color: transparent; }
         body { background: #050811; color: #f8fafc; min-height: 100vh; display: flex; flex-direction: column; align-items: center; padding: 10px; }
         header { text-align: center; margin-bottom: 6px; width: 100%; max-width: 640px; }
-        h1 { font-size: 1.3rem; font-weight: 800; color: #38bdf8; display: flex; align-items: center; justify-content: center; gap: 8px; }
+        h1 { font-size: 1.25rem; font-weight: 800; color: #38bdf8; display: flex; align-items: center; justify-content: center; gap: 8px; }
         .badge { font-size: 0.65rem; padding: 2px 8px; border-radius: 9999px; text-transform: uppercase; color: #fff; font-weight: 800; }
         .badge.nim { background: #16a34a; box-shadow: 0 0 10px rgba(22,163,74,0.5); }
         .badge.cv { background: #0284c7; }
 
-        /* Toast notification */
         #toast { position: fixed; top: 14px; background: #0284c7; color: #fff; padding: 8px 16px; border-radius: 9999px; font-weight: 700; font-size: 0.82rem; box-shadow: 0 4px 15px rgba(0,0,0,0.5); z-index: 100; opacity: 0; transition: opacity 0.3s; pointer-events: none; }
 
         /* Mode Selector Tabs */
@@ -59,17 +58,24 @@ INDEX_HTML = """
         .pulse { width: 8px; height: 8px; border-radius: 50%; background: #22c55e; animation: pulse 1.5s infinite; }
         @keyframes pulse { 0% { opacity: 1; transform: scale(1); } 50% { opacity: 0.4; transform: scale(1.3); } 100% { opacity: 1; transform: scale(1); } }
 
-        /* Hand Orientation & Posture Banner */
-        .hand-card { width: 100%; max-width: 640px; background: #172554; border: 1px solid #3b82f6; border-radius: 12px; padding: 10px 14px; margin-top: 8px; display: flex; justify-content: space-between; align-items: center; }
-        .hand-title { font-size: 0.82rem; font-weight: 700; color: #93c5fd; }
-        .hand-badge { background: #1d4ed8; color: #fff; font-size: 0.82rem; font-weight: 800; padding: 4px 10px; border-radius: 8px; }
+        /* Full Movement Live Card */
+        .movement-card { width: 100%; max-width: 640px; background: #0f172a; border: 1px solid #38bdf8; border-radius: 12px; padding: 10px 14px; margin-top: 8px; }
+        .movement-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
+        .movement-title { font-size: 0.75rem; font-weight: 700; color: #94a3b8; text-transform: uppercase; }
+        .movement-name { font-size: 1.05rem; font-weight: 800; color: #38bdf8; }
+        .movement-cue { font-size: 0.82rem; color: #e2e8f0; font-weight: 600; margin-top: 2px; }
+
+        /* Angles Grid */
+        .angles-bar { display: flex; gap: 6px; width: 100%; max-width: 640px; margin-top: 6px; }
+        .angle-chip { flex: 1; background: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 6px; text-align: center; font-size: 0.72rem; }
+        .angle-chip b { display: block; font-size: 0.95rem; color: #4ade80; }
 
         /* Live NVIDIA NIM Coach Card */
         .nim-card { width: 100%; max-width: 640px; background: #0f172a; border: 2px solid #22c55e; border-radius: 12px; padding: 12px; margin-top: 8px; box-shadow: 0 4px 20px rgba(34,197,94,0.15); }
         .nim-header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #1e293b; padding-bottom: 6px; margin-bottom: 6px; }
         .nim-title { font-size: 0.85rem; font-weight: 800; color: #4ade80; display: flex; align-items: center; gap: 6px; }
         .nim-score { font-size: 0.9rem; font-weight: 800; color: #facc15; }
-        .nim-cue { font-size: 1rem; font-weight: 800; color: #f8fafc; margin-bottom: 4px; line-height: 1.3; }
+        .nim-cue { font-size: 0.95rem; font-weight: 800; color: #f8fafc; margin-bottom: 4px; line-height: 1.3; }
         .nim-details { font-size: 0.78rem; color: #94a3b8; line-height: 1.3; }
 
         .stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; width: 100%; max-width: 640px; margin-top: 8px; }
@@ -95,7 +101,7 @@ INDEX_HTML = """
     <div id="toast">Message</div>
 
     <header>
-        <h1>FitVision AI <span class="badge cv">CV Pose + Hands</span> <span class="badge nim">NVIDIA NIM</span></h1>
+        <h1>FitVision AI <span class="badge cv">Full 33-Point Pose</span> <span class="badge nim">NVIDIA NIM</span></h1>
     </header>
 
     <!-- Source Selector -->
@@ -108,19 +114,31 @@ INDEX_HTML = """
     <input type="file" id="file-input" accept="video/*,image/*" onchange="handleFileUpload(event)">
 
     <div class="viewport">
-        <!-- Autoplays naturally without stretching -->
         <video id="video-player" src="/static/curl_clean.mp4" playsinline autoplay loop muted preload="auto"></video>
         <canvas id="overlay"></canvas>
         <div class="status-pill" id="status-pill">
             <div class="pulse" id="status-pulse"></div>
-            <span id="cv-status-text">CV: Tracking Active</span>
+            <span id="cv-status-text">CV: Tracking All 33 Points</span>
         </div>
     </div>
 
-    <!-- Hand Orientation & Grip Detection Card (Exp 5 Requirement) -->
-    <div class="hand-card">
-        <div class="hand-title">✋ Hand Grip & Wrist Orientation (Exp 5):</div>
-        <div class="hand-badge" id="hand-orientation-badge">SUPINATED (PALM UP)</div>
+    <!-- Real-time Body Movement Identification -->
+    <div class="movement-card">
+        <div class="movement-header">
+            <div class="movement-title">Identified Body Movement:</div>
+            <span style="font-size: 0.75rem; color: #4ade80;" id="movement-hand">Hand: Supinated</span>
+        </div>
+        <div class="movement-name" id="movement-name">Standing / Ready</div>
+        <div class="movement-cue" id="movement-cue">Maintain good posture</div>
+    </div>
+
+    <!-- Live Multi-Joint Angles Bar -->
+    <div class="angles-bar">
+        <div class="angle-chip">L Elbow<b id="ang-larm">0°</b></div>
+        <div class="angle-chip">R Elbow<b id="ang-rarm">0°</b></div>
+        <div class="angle-chip">L Knee<b id="ang-lknee">0°</b></div>
+        <div class="angle-chip">R Knee<b id="ang-rknee">0°</b></div>
+        <div class="angle-chip">Torso<b id="ang-torso">0°</b></div>
     </div>
 
     <!-- Live NVIDIA NIM Coach Card -->
@@ -143,11 +161,11 @@ INDEX_HTML = """
             <div class="stat-value" id="stat-exercise">CURL</div>
         </div>
         <div class="stat-card">
-            <div class="stat-label">Movement Phase</div>
-            <div class="stat-value yellow" id="stat-phase">READY</div>
+            <div class="stat-label">Stage</div>
+            <div class="stat-value yellow" id="stat-stage">READY</div>
         </div>
         <div class="stat-card">
-            <div class="stat-label">Joint Angle</div>
+            <div class="stat-label">Active Angle</div>
             <div class="stat-value" id="stat-angle">0°</div>
         </div>
     </div>
@@ -160,7 +178,7 @@ INDEX_HTML = """
     </div>
 
     <div class="footer-note">
-        Computer Vision practical: 33-point Pose Skeleton (Exp 6), Hand Grip Orientation (Exp 5), FPS HUD (Exp 1), and NVIDIA NIM Biomechanical AI.
+        Complete 33-point Natural Skeleton (Exp 6), Hand Grip Orientation (Exp 5), and NVIDIA NIM Biomechanics.
     </div>
 
     <script>
@@ -179,26 +197,28 @@ INDEX_HTML = """
         let fps = 0;
         let prevReps = 0;
 
-        // Major skeletal connections (excluding clumsy hand lines to prevent "clay" look)
-        const BODY_CONNECTIONS = [
-            [11, 13], [13, 15], // Left arm: shoulder -> elbow -> wrist
-            [12, 14], [14, 16], // Right arm: shoulder -> elbow -> wrist
-            [11, 12],           // Shoulders
-            [11, 23], [12, 24], // Torso
-            [23, 24],           // Hips
-            [23, 25], [25, 27], // Left leg: hip -> knee -> ankle
-            [24, 26], [26, 28], // Right leg: hip -> knee -> ankle
-            [27, 29], [29, 31], // Left foot
-            [28, 30], [30, 32]  // Right foot
-        ];
-
-        // 21-point Hand Skeleton connections (Exp 5)
-        const HAND_CONNECTIONS = [
-            [0, 1], [1, 2], [2, 3], [3, 4],       // Thumb
-            [0, 5], [5, 6], [6, 7], [7, 8],       // Index
-            [0, 9], [9, 10], [10, 11], [11, 12],  // Middle
-            [0, 13], [13, 14], [14, 15], [15, 16],// Ring
-            [0, 17], [17, 18], [18, 19], [19, 20] // Pinky
+        // Full official 33-landmark skeleton connection graph (All 35 natural bone connections)
+        const FULL_SKELETON_CONNECTIONS = [
+            // Face & Head
+            [0, 1], [1, 2], [2, 3], [3, 7],
+            [0, 4], [4, 5], [5, 6], [6, 8],
+            [9, 10],
+            // Shoulders & Arms
+            [11, 12],
+            [11, 13], [13, 15],
+            [12, 14], [14, 16],
+            // Hands & Fingers
+            [15, 17], [15, 19], [15, 21], [17, 19],
+            [16, 18], [16, 20], [16, 22], [18, 20],
+            // Torso & Spine
+            [11, 23], [12, 24],
+            [23, 24],
+            // Legs
+            [23, 25], [25, 27],
+            [24, 26], [26, 28],
+            // Feet & Toes
+            [27, 29], [27, 31], [29, 31],
+            [28, 30], [28, 32], [30, 32]
         ];
 
         function showToast(msg) {
@@ -374,11 +394,19 @@ INDEX_HTML = """
                     renderOverlay(data);
                     document.getElementById('stat-reps').innerText = data.reps;
                     document.getElementById('stat-exercise').innerText = data.exercise.toUpperCase();
-                    document.getElementById('stat-phase').innerText = data.stage;
+                    document.getElementById('stat-stage').innerText = data.stage;
                     document.getElementById('stat-angle').innerText = data.angle + '°';
 
-                    if (data.hand_orientation && data.hand_orientation.label) {
-                        document.getElementById('hand-orientation-badge').innerText = data.hand_orientation.label.toUpperCase();
+                    // Update full movement card
+                    if (data.movement) {
+                        document.getElementById('movement-name').innerText = data.movement.movement;
+                        document.getElementById('movement-cue').innerText = data.movement.posture_cue;
+                        document.getElementById('movement-hand').innerText = 'Hand: ' + data.movement.hand_state;
+                        document.getElementById('ang-larm').innerText = data.movement.left_arm + '°';
+                        document.getElementById('ang-rarm').innerText = data.movement.right_arm + '°';
+                        document.getElementById('ang-lknee').innerText = data.movement.left_knee + '°';
+                        document.getElementById('ang-rknee').innerText = data.movement.right_knee + '°';
+                        document.getElementById('ang-torso').innerText = data.movement.torso_angle + '°';
                     }
 
                     if (data.reps > prevReps) {
@@ -405,17 +433,17 @@ INDEX_HTML = """
                 return isCamera ? (w - x) : x;
             }
 
-            // 1. Draw Clean Body Skeleton (Cyan lines, width 4)
+            // 1. Draw Full 35 Natural Skeleton Connections (Cyan)
             octx.strokeStyle = '#06b6d4';
-            octx.lineWidth = 4;
+            octx.lineWidth = 3.5;
             octx.lineCap = 'round';
             octx.lineJoin = 'round';
 
-            for (const [p1, p2] of BODY_CONNECTIONS) {
+            for (const [p1, p2] of FULL_SKELETON_CONNECTIONS) {
                 if (lms[p1] && lms[p2]) {
                     const vis1 = lms[p1][2] !== undefined ? lms[p1][2] : 1.0;
                     const vis2 = lms[p2][2] !== undefined ? lms[p2][2] : 1.0;
-                    if (vis1 > 0.3 && vis2 > 0.3) {
+                    if (vis1 > 0.25 && vis2 > 0.25) {
                         octx.beginPath();
                         octx.moveTo(mapX(lms[p1][0]), lms[p1][1]);
                         octx.lineTo(mapX(lms[p2][0]), lms[p2][1]);
@@ -424,42 +452,40 @@ INDEX_HTML = """
                 }
             }
 
-            // 2. Draw Body Joint Dots (Pink circles)
-            for (const id in lms) {
+            // 2. Draw ALL 33 RAW LANDMARK DOTS (Color-coded by anatomy)
+            for (const id_str in lms) {
+                const id = parseInt(id_str);
                 const pt = lms[id];
                 const vis = pt[2] !== undefined ? pt[2] : 1.0;
-                // Don't draw the 4 clumsy pose wrist fingers to prevent "clay" look!
-                if (vis > 0.3 && id < 17) {
-                    octx.fillStyle = '#f43f5e';
-                    octx.beginPath();
-                    octx.arc(mapX(pt[0]), pt[1], 6, 0, 2 * Math.PI);
-                    octx.fill();
-                    octx.strokeStyle = '#ffffff';
-                    octx.lineWidth = 1.5;
-                    octx.stroke();
-                }
-            }
+                if (vis > 0.25) {
+                    const px = mapX(pt[0]);
+                    const py = pt[1];
 
-            // 3. Draw 21-point Hand Skeleton if detected (Exp 5 Hand Tracking)
-            if (data.hand_landmarks && data.hand_landmarks.length === 21) {
-                const hl = data.hand_landmarks;
-                octx.strokeStyle = '#38bdf8';
-                octx.lineWidth = 2;
-                for (const [p1, p2] of HAND_CONNECTIONS) {
+                    // Outer white glow
+                    octx.fillStyle = '#ffffff';
                     octx.beginPath();
-                    octx.moveTo(mapX(hl[p1][0]), hl[p1][1]);
-                    octx.lineTo(mapX(hl[p2][0]), hl[p2][1]);
-                    octx.stroke();
-                }
-                for (const pt of hl) {
-                    octx.fillStyle = '#22c55e';
+                    octx.arc(px, py, 5.5, 0, 2 * Math.PI);
+                    octx.fill();
+
+                    // Inner color by body section:
+                    // 0-10: Face (Yellow)
+                    // 11-16: Arms & Shoulders (Pink)
+                    // 17-22: Hands (Cyan)
+                    // 23-28: Hips & Legs (Green)
+                    // 29-32: Feet (Orange)
+                    if (id <= 10) octx.fillStyle = '#facc15';
+                    else if (id <= 16) octx.fillStyle = '#ec4899';
+                    else if (id <= 22) octx.fillStyle = '#38bdf8';
+                    else if (id <= 28) octx.fillStyle = '#22c55e';
+                    else octx.fillStyle = '#f97316';
+
                     octx.beginPath();
-                    octx.arc(mapX(pt[0]), pt[1], 3, 0, 2 * Math.PI);
+                    octx.arc(px, py, 3.5, 0, 2 * Math.PI);
                     octx.fill();
                 }
             }
 
-            // 4. Highlight Active Joint with Angle Arc & Degree Text (Green)
+            // 3. Highlight Active Exercise Joint with Angle Arc
             if (data.active_joint) {
                 const j = data.active_joint;
                 const jx = mapX(j[0]);
@@ -467,44 +493,31 @@ INDEX_HTML = """
 
                 octx.fillStyle = '#22c55e';
                 octx.beginPath();
-                octx.arc(jx, jy, 12, 0, 2 * Math.PI);
+                octx.arc(jx, jy, 11, 0, 2 * Math.PI);
                 octx.fill();
                 octx.strokeStyle = '#ffffff';
-                octx.lineWidth = 2.5;
+                octx.lineWidth = 2;
                 octx.stroke();
 
-                octx.font = 'bold 18px sans-serif';
+                octx.font = 'bold 16px sans-serif';
                 octx.fillStyle = '#ffffff';
-                octx.fillText(data.angle + '°', jx + 14, jy - 10);
+                octx.fillText(data.angle + '°', jx + 14, jy - 8);
             }
 
-            // 5. Draw Floating Hand Orientation Badge above Active Wrist (Exp 5)
-            if (data.hand_orientation && data.hand_orientation.wrist_pos) {
-                const wp = data.hand_orientation.wrist_pos;
-                const wx = mapX(wp[0]);
-                const wy = wp[1];
-
-                const tag = '✋ ' + data.hand_orientation.orientation;
-                octx.font = 'bold 13px sans-serif';
-                const tw = octx.measureText(tag).width;
-
-                octx.fillStyle = 'rgba(15, 23, 42, 0.85)';
-                octx.fillRect(wx - tw/2 - 6, wy - 34, tw + 12, 22);
-                octx.strokeStyle = '#38bdf8';
-                octx.lineWidth = 1;
-                octx.strokeRect(wx - tw/2 - 6, wy - 34, tw + 12, 22);
-
-                octx.fillStyle = '#38bdf8';
-                octx.fillText(tag, wx - tw/2, wy - 18);
+            // 4. Floating Thumbs Up / Gesture Banner if detected
+            if (data.movement && data.movement.is_gesture) {
+                octx.fillStyle = '#eab308';
+                octx.font = 'bold 18px sans-serif';
+                octx.fillText('👍 GESTURE ACTIVE', w / 2 - 80, 42);
             }
 
-            // 6. Top Status Bar: Local FPS Counter (Exp 1 requirement)
+            // 5. FPS & Locking Status
             octx.fillStyle = '#22c55e';
             octx.font = 'bold 14px monospace';
-            const detected = Object.keys(lms).length > 0;
-            octx.fillText('FPS: ' + fps + ' | ' + (detected ? 'POSE LOCKED ✅' : 'SEARCHING...'), 12, 24);
+            const count = Object.keys(lms).length;
+            octx.fillText('FPS: ' + fps + ' | 33 POINTS ACTIVE (' + count + ' LOCATED)', 12, 24);
 
-            // 7. Rep Progress Bar along bottom
+            // 6. Progress bar
             const progress = Math.max(0, Math.min(1, (data.progress || 0) / 100));
             octx.fillStyle = '#1e293b';
             octx.fillRect(0, h - 8, w, 8);
@@ -564,7 +577,7 @@ def process_frame():
     if frame is None:
         return jsonify({"error": "Decode failed"}), 400
 
-    # 1. Pose Landmark Extraction (Exp 6)
+    # 1. Full 33-point Pose Landmark Extraction (Exp 6)
     landmarks_dict = {}
     active_joint = None
 
@@ -575,8 +588,11 @@ def process_frame():
             sy = int(lm.y * target_h)
             landmarks_dict[idx] = (sx, sy, float(lm.visibility))
 
-    # 2. Update Rep Tracker
-    if landmarks_dict:
+    # 2. Comprehensive Body Movement & Gesture Analysis
+    movement_info = analyze_full_body_movement(landmarks_dict, tracker.exercise)
+
+    # 3. Update Rep Counter ONLY when NOT in a gesture (prevents thumbs-up false reps)
+    if landmarks_dict and not movement_info.get("is_gesture", False):
         status = tracker.update(landmarks_dict)
     else:
         status = tracker._status()
@@ -590,14 +606,11 @@ def process_frame():
     if active_id in landmarks_dict:
         active_joint = [landmarks_dict[active_id][0], landmarks_dict[active_id][1]]
 
-    # 3. Hand Orientation & Grip Detection (Exp 5)
-    hand_info = detect_hand_orientation(landmarks_dict, tracker.active_side)
-
     return jsonify({
         "landmarks": landmarks_dict,
         "active_joint": active_joint,
         "active_side": tracker.active_side,
-        "hand_orientation": hand_info,
+        "movement": movement_info,
         "reps": status["reps"],
         "exercise": status["exercise"],
         "stage": status["stage"],
