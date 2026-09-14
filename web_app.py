@@ -229,23 +229,24 @@ INDEX_HTML = """
         let frameCount = 0;
         let fps = 60;
 
-        // Full 33-landmark skeleton connection graph
+        // Full clean natural skeleton: robust face connections + body bones
         const FULL_SKELETON_CONNECTIONS = [
-            // Face & Head
-            [0, 1], [1, 2], [2, 3], [3, 7],
-            [0, 4], [4, 5], [5, 6], [6, 8],
-            [9, 10],
+            // Head & Neck (Clean anatomical alignment, no spiderweb!)
+            [7, 2], [8, 5],     // Ears to Eyes
+            [2, 0], [5, 0],     // Eyes to Nose
+            [9, 10],            // Mouth
+            [0, 11], [0, 12],   // Neck to Shoulders
             // Shoulders & Arms
-            [11, 12],
-            [11, 13], [13, 15],
-            [12, 14], [14, 16],
+            [11, 12],           // Collar / Shoulders
+            [11, 13], [13, 15], // Left arm: shoulder -> elbow -> wrist
+            [12, 14], [14, 16], // Right arm: shoulder -> elbow -> wrist
             // Torso & Spine
-            [11, 23], [12, 24],
-            [23, 24],
-            // Legs
-            [23, 25], [25, 27],
-            [24, 26], [26, 28],
-            // Feet & Toes
+            [11, 23], [12, 24], // Torso sides
+            [23, 24],           // Hips / Pelvis
+            // Legs (ONLY drawn when in frame)
+            [23, 25], [25, 27], // Left leg: hip -> knee -> ankle
+            [24, 26], [26, 28], // Right leg: hip -> knee -> ankle
+            // Feet
             [27, 29], [27, 31], [29, 31],
             [28, 30], [28, 32], [30, 32]
         ];
@@ -445,11 +446,11 @@ INDEX_HTML = """
                         document.getElementById('movement-cue').innerText = data.movement.posture_cue;
                         const handDesc = (data.hands && data.hands.length > 0) ? 'All 5 Fingers Articulated (' + data.hands.length + ' Hand' + (data.hands.length > 1 ? 's' : '') + ')' : data.movement.hand_state;
                         document.getElementById('movement-hand').innerText = 'Hand: ' + handDesc;
-                        document.getElementById('ang-larm').innerText = data.movement.left_arm + '°';
-                        document.getElementById('ang-rarm').innerText = data.movement.right_arm + '°';
-                        document.getElementById('ang-lknee').innerText = data.movement.left_knee + '°';
-                        document.getElementById('ang-rknee').innerText = data.movement.right_knee + '°';
-                        document.getElementById('ang-torso').innerText = data.movement.torso_angle + '°';
+                        document.getElementById('ang-larm').innerText = (data.movement.left_arm !== null ? data.movement.left_arm + '°' : '--');
+                        document.getElementById('ang-rarm').innerText = (data.movement.right_arm !== null ? data.movement.right_arm + '°' : '--');
+                        document.getElementById('ang-lknee').innerText = (data.movement.left_knee !== null ? data.movement.left_knee + '°' : '--');
+                        document.getElementById('ang-rknee').innerText = (data.movement.right_knee !== null ? data.movement.right_knee + '°' : '--');
+                        document.getElementById('ang-torso').innerText = (data.movement.torso_angle !== null ? data.movement.torso_angle + '°' : '--');
                     }
 
                     if (data.reps > prevReps) {
@@ -477,21 +478,34 @@ INDEX_HTML = """
 
             octx.clearRect(0, 0, overlay.width, overlay.height);
 
-            // Interpolate Angle & Progress
-            displayAngle += (targetAngle - displayAngle) * 0.35;
+            // Interpolate Angle & Progress ONLY if genuinely visible
+            if (targetAngle !== null && targetAngle !== undefined) {
+                displayAngle += (targetAngle - displayAngle) * 0.35;
+                document.getElementById('stat-angle').innerText = Math.round(displayAngle) + '°';
+            } else {
+                displayAngle = null;
+                document.getElementById('stat-angle').innerText = '--';
+            }
             displayProgress += (targetProgress - displayProgress) * 0.35;
-            document.getElementById('stat-angle').innerText = Math.round(displayAngle) + '°';
 
-            // Interpolate Landmark Coordinates (LERP)
-            const lerpFactor = 0.42; // Fast, organic responsiveness
+            // Interpolate Landmark Coordinates (LERP) - strictly purge vanished/occluded joints
+            for (const id in currentLandmarks) {
+                if (!targetLandmarks[id] || targetLandmarks[id][2] < 0.55) {
+                    delete currentLandmarks[id];
+                }
+            }
+
+            const lerpFactor = 0.42;
             for (const id in targetLandmarks) {
                 const target = targetLandmarks[id];
-                if (!currentLandmarks[id]) {
-                    currentLandmarks[id] = [target[0], target[1], target[2]];
-                } else {
-                    currentLandmarks[id][0] += (target[0] - currentLandmarks[id][0]) * lerpFactor;
-                    currentLandmarks[id][1] += (target[1] - currentLandmarks[id][1]) * lerpFactor;
-                    currentLandmarks[id][2] = target[2];
+                if (target[2] >= 0.55) {
+                    if (!currentLandmarks[id]) {
+                        currentLandmarks[id] = [target[0], target[1], target[2]];
+                    } else {
+                        currentLandmarks[id][0] += (target[0] - currentLandmarks[id][0]) * lerpFactor;
+                        currentLandmarks[id][1] += (target[1] - currentLandmarks[id][1]) * lerpFactor;
+                        currentLandmarks[id][2] = target[2];
+                    }
                 }
             }
 
@@ -519,7 +533,7 @@ INDEX_HTML = """
 
             const lms = currentLandmarks;
 
-            // 1. Draw Full 33-Point Natural Body Skeleton (Smooth Glow)
+            // 1. Draw Clean Anatomical Bones (ONLY when visibility >= 0.55)
             octx.strokeStyle = '#06b6d4';
             octx.lineWidth = 3.5;
             octx.lineCap = 'round';
@@ -529,7 +543,10 @@ INDEX_HTML = """
                 if (lms[p1] && lms[p2]) {
                     const vis1 = lms[p1][2] !== undefined ? lms[p1][2] : 1.0;
                     const vis2 = lms[p2][2] !== undefined ? lms[p2][2] : 1.0;
-                    if (vis1 > 0.25 && vis2 > 0.25) {
+                    const isHeadConnection = (p1 <= 10 || p2 <= 10);
+                    const minThresh = isHeadConnection ? 0.65 : 0.55;
+
+                    if (vis1 >= minThresh && vis2 >= minThresh) {
                         octx.beginPath();
                         octx.moveTo(mapX(lms[p1][0]), lms[p1][1]);
                         octx.lineTo(mapX(lms[p2][0]), lms[p2][1]);
@@ -538,22 +555,22 @@ INDEX_HTML = """
                 }
             }
 
-            // 2. Draw ALL 33 RAW LANDMARK DOTS (Color-coded anatomy)
+            // 2. Draw ONLY Genuinely Detected Landmark Dots (vis >= 0.55)
             for (const id_str in lms) {
                 const id = parseInt(id_str);
                 const pt = lms[id];
                 const vis = pt[2] !== undefined ? pt[2] : 1.0;
-                if (vis > 0.25) {
+                const minThresh = id <= 10 ? 0.65 : 0.55;
+
+                if (vis >= minThresh) {
                     const px = mapX(pt[0]);
                     const py = pt[1];
 
-                    // Outer white ring
                     octx.fillStyle = '#ffffff';
                     octx.beginPath();
                     octx.arc(px, py, 5.5, 0, 2 * Math.PI);
                     octx.fill();
 
-                    // Inner anatomy colors
                     if (id <= 10) octx.fillStyle = '#facc15';      // Face: Yellow
                     else if (id <= 16) octx.fillStyle = '#ec4899'; // Arms & Shoulders: Pink
                     else if (id <= 22) octx.fillStyle = '#38bdf8'; // Hands: Cyan
@@ -595,9 +612,9 @@ INDEX_HTML = """
                 }
             }
 
-            // 4. Highlight Active Joint with Angle Text
+            // 4. Highlight Active Joint with Angle Text (ONLY if joint is visible and angle exists)
             const activeId = currentExercise === 'curl' ? 13 : 25;
-            if (lms[activeId] && lms[activeId][2] > 0.25) {
+            if (displayAngle !== null && lms[activeId] && lms[activeId][2] >= 0.55) {
                 const jx = mapX(lms[activeId][0]);
                 const jy = lms[activeId][1];
 
@@ -728,15 +745,20 @@ def process_frame():
     raw_movement["movement"] = stable_movement_name
 
     # 4. Hysteresis Exercise Rep Counting
-    active_angle = raw_movement.get("active_angle", 160.0)
+    active_angle = raw_movement.get("active_angle")
     is_gesture = raw_movement.get("is_gesture", False)
     stage, reps, feedback = hysteresis_engine.update(active_angle, is_gesture)
 
-    # Calculate smooth progress percentage
-    if tracker.exercise == "curl":
-        progress = float(np.clip(np.interp(active_angle, (45, 140), (100, 0)), 0, 100))
+    # Calculate smooth progress percentage ONLY if angle exists
+    if active_angle is not None:
+        if tracker.exercise == "curl":
+            progress = float(np.clip(np.interp(active_angle, (45, 140), (100, 0)), 0, 100))
+        else:
+            progress = float(np.clip(np.interp(active_angle, (95, 155), (100, 0)), 0, 100))
+        angle_out = round(active_angle, 1)
     else:
-        progress = float(np.clip(np.interp(active_angle, (95, 155), (100, 0)), 0, 100))
+        progress = 0.0
+        angle_out = None
 
     return jsonify({
         "landmarks": landmarks_dict,
@@ -747,7 +769,7 @@ def process_frame():
         "exercise": tracker.exercise,
         "stage": stage,
         "feedback": feedback,
-        "angle": round(active_angle, 1),
+        "angle": angle_out,
         "progress": round(progress, 1),
     })
 

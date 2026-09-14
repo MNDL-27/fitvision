@@ -57,6 +57,9 @@ class HysteresisExerciseEngine:
         if is_gesture:
             return self.stage, self.reps, "Gesture active — Reps paused"
 
+        if raw_angle is None:
+            return self.stage, self.reps, f"Position camera: {self.exercise.capitalize()} joints not in frame"
+
         if self.filter is None:
             self.filter = OneEuroFilter(x0=raw_angle, min_cutoff=1.5, beta=0.02)
         angle = self.filter.filter(raw_angle)
