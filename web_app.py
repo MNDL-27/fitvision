@@ -14,7 +14,8 @@ STATIC_DIR = Path(__file__).parent / "static"
 app = Flask(__name__, static_folder=str(STATIC_DIR))
 CORS(app)
 
-pose_detector = PoseDetector(complexity=0, detection_con=0.35, track_con=0.35)
+# Use BlazePose Full (complexity=1) for high-accuracy body tracking
+pose_detector = PoseDetector(complexity=1, detection_con=0.4, track_con=0.4)
 tracker = ExerciseTracker(exercise="curl")
 nim_coach = NvidiaNimCoach()
 
@@ -50,9 +51,9 @@ INDEX_HTML = """
         .tab-btn:active { transform: scale(0.96); }
         .tab-btn.active { background: #0284c7; color: #fff; border-color: #38bdf8; box-shadow: 0 0 10px rgba(2,132,199,0.5); }
 
-        .viewport { position: relative; width: 100%; max-width: 640px; aspect-ratio: 4/3; background: #000; border-radius: 16px; overflow: hidden; box-shadow: 0 12px 35px -5px rgba(0,0,0,0.8); border: 2px solid #1e293b; }
-        #video-player { width: 100%; height: 100%; object-fit: cover; display: block; }
-        #overlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+        .viewport { position: relative; width: 100%; max-width: 640px; margin: 0 auto; background: #000; border-radius: 16px; overflow: hidden; box-shadow: 0 12px 35px -5px rgba(0,0,0,0.8); border: 2px solid #1e293b; }
+        #video-player { width: 100%; height: auto; max-height: 65vh; display: block; }
+        #overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
 
         .status-pill { position: absolute; top: 10px; left: 10px; background: rgba(15, 23, 42, 0.85); backdrop-filter: blur(8px); border: 1px solid #334155; padding: 5px 12px; border-radius: 9999px; font-size: 0.72rem; font-weight: 700; color: #38bdf8; display: flex; align-items: center; gap: 6px; z-index: 5; }
         .pulse { width: 8px; height: 8px; border-radius: 50%; background: #22c55e; animation: pulse 1.5s infinite; }
@@ -99,7 +100,7 @@ INDEX_HTML = """
 
     <!-- Source Selector -->
     <div class="source-bar">
-        <button class="tab-btn active" id="tab-curl" onclick="loadVideo('/static/curl.mp4', 'curl', this)">🏋️ Curls Demo</button>
+        <button class="tab-btn active" id="tab-curl" onclick="loadVideo('/static/curl_clean.mp4', 'curl', this)">🏋️ Curls Demo</button>
         <button class="tab-btn" id="tab-squat" onclick="loadVideo('/static/squat.mp4', 'squat', this)">🏋️ Squats Demo</button>
         <button class="tab-btn" id="tab-cam" onclick="startCamera(this)">📹 Live Camera</button>
         <button class="tab-btn" id="tab-upload" onclick="document.getElementById('file-input').click()">📁 Upload</button>
@@ -107,7 +108,8 @@ INDEX_HTML = """
     <input type="file" id="file-input" accept="video/*,image/*" onchange="handleFileUpload(event)">
 
     <div class="viewport">
-        <video id="video-player" src="/static/curl.mp4" playsinline autoplay loop muted preload="auto"></video>
+        <!-- Autoplays naturally without stretching -->
+        <video id="video-player" src="/static/curl_clean.mp4" playsinline autoplay loop muted preload="auto"></video>
         <canvas id="overlay"></canvas>
         <div class="status-pill" id="status-pill">
             <div class="pulse" id="status-pulse"></div>
@@ -167,8 +169,6 @@ INDEX_HTML = """
         const octx = overlay.getContext('2d');
 
         const sendCanvas = document.createElement('canvas');
-        sendCanvas.width = 480;
-        sendCanvas.height = 360;
         const sctx = sendCanvas.getContext('2d');
 
         let inFlight = false;
@@ -179,14 +179,26 @@ INDEX_HTML = """
         let fps = 0;
         let prevReps = 0;
 
-        const POSE_CONNECTIONS = [
-            [11, 13], [13, 15], // Left arm
-            [12, 14], [14, 16], // Right arm
+        // Major skeletal connections (excluding clumsy hand lines to prevent "clay" look)
+        const BODY_CONNECTIONS = [
+            [11, 13], [13, 15], // Left arm: shoulder -> elbow -> wrist
+            [12, 14], [14, 16], // Right arm: shoulder -> elbow -> wrist
             [11, 12],           // Shoulders
             [11, 23], [12, 24], // Torso
             [23, 24],           // Hips
-            [23, 25], [25, 27], // Left leg
-            [24, 26], [26, 28]  // Right leg
+            [23, 25], [25, 27], // Left leg: hip -> knee -> ankle
+            [24, 26], [26, 28], // Right leg: hip -> knee -> ankle
+            [27, 29], [29, 31], // Left foot
+            [28, 30], [30, 32]  // Right foot
+        ];
+
+        // 21-point Hand Skeleton connections (Exp 5)
+        const HAND_CONNECTIONS = [
+            [0, 1], [1, 2], [2, 3], [3, 4],       // Thumb
+            [0, 5], [5, 6], [6, 7], [7, 8],       // Index
+            [0, 9], [9, 10], [10, 11], [11, 12],  // Middle
+            [0, 13], [13, 14], [14, 15], [15, 16],// Ring
+            [0, 17], [17, 18], [18, 19], [19, 20] // Pinky
         ];
 
         function showToast(msg) {
@@ -208,11 +220,14 @@ INDEX_HTML = """
             }
         }
 
-        function updateOverlaySize() {
+        function syncDimensions() {
             overlay.width = video.videoWidth || 640;
             overlay.height = video.videoHeight || 480;
+            sendCanvas.width = 480;
+            sendCanvas.height = Math.round(480 * ((video.videoHeight || 480) / (video.videoWidth || 640)));
         }
-        video.addEventListener('loadedmetadata', updateOverlaySize);
+        video.addEventListener('loadedmetadata', syncDimensions);
+        window.addEventListener('resize', syncDimensions);
 
         async function loadVideo(url, ex, btn) {
             showToast('Loading ' + ex.toUpperCase() + ' Demo...');
@@ -229,6 +244,7 @@ INDEX_HTML = """
             } catch (e) {
                 console.warn('Play error:', e);
             }
+            syncDimensions();
             currentExercise = ex;
             document.getElementById('stat-exercise').innerText = ex.toUpperCase();
             document.getElementById('btn-play').innerText = '⏸ Pause Video';
@@ -255,11 +271,12 @@ INDEX_HTML = """
                 });
                 video.srcObject = stream;
                 await video.play();
+                syncDimensions();
                 isCamera = true;
                 showToast('Camera Active');
             } catch (err) {
                 alert('Camera error: ' + err.message);
-                loadVideo('/static/curl.mp4', 'curl', document.getElementById('tab-curl'));
+                loadVideo('/static/curl_clean.mp4', 'curl', document.getElementById('tab-curl'));
             }
         }
 
@@ -276,6 +293,7 @@ INDEX_HTML = """
             video.muted = true;
             video.load();
             video.play();
+            syncDimensions();
         }
 
         function togglePlayPause() {
@@ -295,7 +313,7 @@ INDEX_HTML = """
             const nextEx = currentExercise === 'curl' ? 'squat' : 'curl';
             showToast('Switching to ' + nextEx.toUpperCase());
             const tab = nextEx === 'curl' ? document.getElementById('tab-curl') : document.getElementById('tab-squat');
-            const url = nextEx === 'curl' ? '/static/curl.mp4' : '/static/squat.mp4';
+            const url = nextEx === 'curl' ? '/static/curl_clean.mp4' : '/static/squat.mp4';
             if (!isCamera) {
                 loadVideo(url, nextEx, tab);
             } else {
@@ -343,7 +361,7 @@ INDEX_HTML = """
             inFlight = true;
 
             sctx.drawImage(video, 0, 0, sendCanvas.width, sendCanvas.height);
-            const base64Data = sendCanvas.toDataURL('image/jpeg', 0.6).split(',')[1];
+            const base64Data = sendCanvas.toDataURL('image/jpeg', 0.65).split(',')[1];
 
             try {
                 const res = await fetch('/process_frame', {
@@ -363,7 +381,6 @@ INDEX_HTML = """
                         document.getElementById('hand-orientation-badge').innerText = data.hand_orientation.label.toUpperCase();
                     }
 
-                    // Auto-trigger NVIDIA NIM audit on completed reps!
                     if (data.reps > prevReps) {
                         prevReps = data.reps;
                         triggerNimAudit();
@@ -388,15 +405,17 @@ INDEX_HTML = """
                 return isCamera ? (w - x) : x;
             }
 
-            // Draw skeleton lines (Cyan)
+            // 1. Draw Clean Body Skeleton (Cyan lines, width 4)
             octx.strokeStyle = '#06b6d4';
             octx.lineWidth = 4;
+            octx.lineCap = 'round';
+            octx.lineJoin = 'round';
 
-            for (const [p1, p2] of POSE_CONNECTIONS) {
+            for (const [p1, p2] of BODY_CONNECTIONS) {
                 if (lms[p1] && lms[p2]) {
                     const vis1 = lms[p1][2] !== undefined ? lms[p1][2] : 1.0;
                     const vis2 = lms[p2][2] !== undefined ? lms[p2][2] : 1.0;
-                    if (vis1 > 0.25 && vis2 > 0.25) {
+                    if (vis1 > 0.3 && vis2 > 0.3) {
                         octx.beginPath();
                         octx.moveTo(mapX(lms[p1][0]), lms[p1][1]);
                         octx.lineTo(mapX(lms[p2][0]), lms[p2][1]);
@@ -405,19 +424,42 @@ INDEX_HTML = """
                 }
             }
 
-            // Draw joint circles (Pink)
+            // 2. Draw Body Joint Dots (Pink circles)
             for (const id in lms) {
                 const pt = lms[id];
                 const vis = pt[2] !== undefined ? pt[2] : 1.0;
-                if (vis > 0.25) {
+                // Don't draw the 4 clumsy pose wrist fingers to prevent "clay" look!
+                if (vis > 0.3 && id < 17) {
                     octx.fillStyle = '#f43f5e';
                     octx.beginPath();
                     octx.arc(mapX(pt[0]), pt[1], 6, 0, 2 * Math.PI);
                     octx.fill();
+                    octx.strokeStyle = '#ffffff';
+                    octx.lineWidth = 1.5;
+                    octx.stroke();
                 }
             }
 
-            // Highlight Active Joint & Display Angle (Green)
+            // 3. Draw 21-point Hand Skeleton if detected (Exp 5 Hand Tracking)
+            if (data.hand_landmarks && data.hand_landmarks.length === 21) {
+                const hl = data.hand_landmarks;
+                octx.strokeStyle = '#38bdf8';
+                octx.lineWidth = 2;
+                for (const [p1, p2] of HAND_CONNECTIONS) {
+                    octx.beginPath();
+                    octx.moveTo(mapX(hl[p1][0]), hl[p1][1]);
+                    octx.lineTo(mapX(hl[p2][0]), hl[p2][1]);
+                    octx.stroke();
+                }
+                for (const pt of hl) {
+                    octx.fillStyle = '#22c55e';
+                    octx.beginPath();
+                    octx.arc(mapX(pt[0]), pt[1], 3, 0, 2 * Math.PI);
+                    octx.fill();
+                }
+            }
+
+            // 4. Highlight Active Joint with Angle Arc & Degree Text (Green)
             if (data.active_joint) {
                 const j = data.active_joint;
                 const jx = mapX(j[0]);
@@ -427,30 +469,42 @@ INDEX_HTML = """
                 octx.beginPath();
                 octx.arc(jx, jy, 12, 0, 2 * Math.PI);
                 octx.fill();
+                octx.strokeStyle = '#ffffff';
+                octx.lineWidth = 2.5;
+                octx.stroke();
 
                 octx.font = 'bold 18px sans-serif';
                 octx.fillStyle = '#ffffff';
                 octx.fillText(data.angle + '°', jx + 14, jy - 10);
             }
 
-            // Draw Hand Orientation Tag above Wrist (Exp 5)
+            // 5. Draw Floating Hand Orientation Badge above Active Wrist (Exp 5)
             if (data.hand_orientation && data.hand_orientation.wrist_pos) {
                 const wp = data.hand_orientation.wrist_pos;
                 const wx = mapX(wp[0]);
                 const wy = wp[1];
 
-                octx.fillStyle = '#3b82f6';
-                octx.font = 'bold 14px sans-serif';
-                octx.fillText('✋ ' + data.hand_orientation.orientation, wx - 30, wy - 18);
+                const tag = '✋ ' + data.hand_orientation.orientation;
+                octx.font = 'bold 13px sans-serif';
+                const tw = octx.measureText(tag).width;
+
+                octx.fillStyle = 'rgba(15, 23, 42, 0.85)';
+                octx.fillRect(wx - tw/2 - 6, wy - 34, tw + 12, 22);
+                octx.strokeStyle = '#38bdf8';
+                octx.lineWidth = 1;
+                octx.strokeRect(wx - tw/2 - 6, wy - 34, tw + 12, 22);
+
+                octx.fillStyle = '#38bdf8';
+                octx.fillText(tag, wx - tw/2, wy - 18);
             }
 
-            // Top Status Bar: Local FPS Counter (Exp 1 requirement)
+            // 6. Top Status Bar: Local FPS Counter (Exp 1 requirement)
             octx.fillStyle = '#22c55e';
             octx.font = 'bold 14px monospace';
             const detected = Object.keys(lms).length > 0;
-            octx.fillText('FPS: ' + fps + ' | ' + (detected ? 'POSTURE LOCKED ✅' : 'SEARCHING...'), 12, 24);
+            octx.fillText('FPS: ' + fps + ' | ' + (detected ? 'POSE LOCKED ✅' : 'SEARCHING...'), 12, 24);
 
-            // Rep Progress Bar along bottom
+            // 7. Rep Progress Bar along bottom
             const progress = Math.max(0, Math.min(1, (data.progress || 0) / 100));
             octx.fillStyle = '#1e293b';
             octx.fillRect(0, h - 8, w, 8);
@@ -459,7 +513,6 @@ INDEX_HTML = """
         }
 
         async function continuousCvLoop() {
-            // Measure FPS
             frameCount++;
             const now = performance.now();
             if (now - lastFpsTime >= 1000) {
@@ -471,14 +524,13 @@ INDEX_HTML = """
             if (!inFlight && !video.paused) {
                 await sendCvFrame();
             }
-            setTimeout(continuousCvLoop, 60);
+            setTimeout(continuousCvLoop, 50);
         }
 
-        // Auto-start on load
         window.addEventListener('DOMContentLoaded', () => {
-            updateOverlaySize();
+            syncDimensions();
             video.play().catch(() => {});
-            setTimeout(continuousCvLoop, 600);
+            setTimeout(continuousCvLoop, 500);
         });
     </script>
 </body>
