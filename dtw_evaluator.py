@@ -38,7 +38,7 @@ class DTWRepEvaluator:
 
     def score_rep(self, trajectory, exercise="curl"):
         ex = exercise.lower()
-        if not trajectory or len(trajectory) < 4:
+        if trajectory is None or len(trajectory) < 4:
             return {"form_score": 75, "rating": "GOOD", "distance": 15.0}
 
         ref = self.reference_curves.get(ex, self.reference_curves["curl"])
